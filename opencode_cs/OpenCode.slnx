@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/OpenCode.Cli/OpenCode.Cli.csproj" />
+    <Project Path="src/OpenCode.Client/OpenCode.Client.csproj" />
+    <Project Path="src/OpenCode.Core/OpenCode.Core.csproj" />
+    <Project Path="src/OpenCode.Data/OpenCode.Data.csproj" />
+    <Project Path="src/OpenCode.Plugin/OpenCode.Plugin.csproj" />
+    <Project Path="src/OpenCode.Protocol/OpenCode.Protocol.csproj" />
+    <Project Path="src/OpenCode.Schema/OpenCode.Schema.csproj" />
+    <Project Path="src/OpenCode.Sdk/OpenCode.Sdk.csproj" />
+    <Project Path="src/OpenCode.Server/OpenCode.Server.csproj" />
+    <Project Path="src/OpenCode.Tui/OpenCode.Tui.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/OpenCode.Tests/OpenCode.Tests.csproj" />
+  </Folder>
+</Solution>
