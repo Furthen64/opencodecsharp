@@ -16,7 +16,7 @@ public record AgentInfo(
     string? Color,
     int? Steps,
     bool? Disabled,
-    List<PermissionRule>? Permissions
+    List<Schema.PermissionRule>? Permissions
 );
 
 public static class AgentInfoDefaults

@@ -12,7 +12,7 @@ public record ConfigInfo(
     [property: JsonPropertyName("share")] string? Share,
     [property: JsonPropertyName("enterprise")] ConfigEnterprise? Enterprise,
     [property: JsonPropertyName("username")] string? Username,
-    [property: JsonPropertyName("permissions")] List<PermissionRule>? Permissions,
+    [property: JsonPropertyName("permissions")] List<ConfigPermissionRule>? Permissions,
     [property: JsonPropertyName("agents")] Dictionary<string, ConfigAgentInfo>? Agents,
     [property: JsonPropertyName("snapshots")] bool? Snapshots,
     [property: JsonPropertyName("watcher")] ConfigWatcherInfo? Watcher,
@@ -33,7 +33,7 @@ public record ConfigInfo(
 
 public record ConfigEnterprise(string? Url);
 
-public record PermissionRule(string Action, string Resource, string Effect);
+public record ConfigPermissionRule(string Action, string Resource, string Effect);
 
 public record ConfigAgentInfo(
     string? Model,
@@ -46,7 +46,7 @@ public record ConfigAgentInfo(
     string? Color,
     int? Steps,
     bool? Disabled,
-    List<PermissionRule>? Permissions
+    List<ConfigPermissionRule>? Permissions
 );
 
 public record ConfigWatcherInfo(bool? Enabled);

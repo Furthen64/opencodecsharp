@@ -31,7 +31,7 @@ All protocol definitions ported as C# records (~18 files).
 - Added missing schema types: `PermissionSaved.cs`, `PtyTicket.cs`, `ProjectCopy.cs`, `Workspace.cs`
 - Fixed namespace naming to align with flat C# conventions
 
-### Phase 3: Core Runtime — 🚧 IN PROGRESS (Foundations Done)
+### Phase 3: Core Runtime — 🚧 IN PROGRESS (Mostly Done)
 Ported foundations:
 - CoreSchema: path/int helpers, model ref parsing
 - GlobalPaths: XDG-compliant path resolution
@@ -43,12 +43,19 @@ Ported foundations:
 - ProjectService: project resolution
 - LocationService: location info
 - Session runtime: SessionStore, SessionExecution, error types, input records
-Remaining:
-- Session runner (LLM integration, tool execution loop)
-- Event system, permissions, credentials
-- LLM provider integration
+- Event system: EventService with pub/sub, durable events, serialized events
+- Permission system: PermissionService with evaluate/ask/assert/reply, wildcard matching
+- Session runner: SessionRunner with LLM streaming, tool execution loop, step bounds
 Ported:
 - Built-in tools (ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, WebFetchTool) in `Tools/` folder
+Remaining:
+- LLM provider integration (actual provider clients)
+- Credentials system
+- Model/Provider resolution service
+- Session history, compaction, revert
+- System context, skills, references
+- Git integration
+- Snapshot system
 - Depends on: Schema, Protocol
 
 ### Phase 4: Data Layer — PENDING

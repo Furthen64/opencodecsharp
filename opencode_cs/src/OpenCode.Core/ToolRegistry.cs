@@ -91,14 +91,14 @@ public class ToolRegistry : IToolRegistry
         return tool;
     }
 
-    static bool IsWhollyDisabled(string action, List<PermissionRule> rules)
+    static bool IsWhollyDisabled(string action, List<Schema.PermissionRule> rules)
     {
         for (int i = rules.Count - 1; i >= 0; i--)
         {
             var rule = rules[i];
             if (MatchesWildcard(action, rule.Action))
             {
-                return rule.Resource == "*" && rule.Effect == "deny";
+                return rule.Resource == "*" && rule.Effect == PermissionEffect.Deny;
             }
         }
         return false;
