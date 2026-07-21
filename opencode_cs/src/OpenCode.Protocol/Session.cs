@@ -77,6 +77,6 @@ public record SessionMessagesQuery(
 );
 
 public record SessionMessagesResponse(
-    List<SessionMessageBase> Data,
+    List<object> Data,
     PaginationCursor Cursor
 );

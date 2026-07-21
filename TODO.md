@@ -78,21 +78,28 @@ SQLite data access ported (Drizzle → Microsoft.Data.Sqlite + Dapper).
 - WAL-mode SQLite with auto-migration on startup
 - Depends on: Schema
 
-### Phase 5: Server — PENDING
+### Phase 5: Server — IN PROGRESS
 Port ASP.NET Core Minimal APIs (Hono → Minimal APIs).
 - Depends on: Core, Protocol, Data
+- Implemented: health/path, agent/skill/VCS/question, session lifecycle and status APIs
+- Implemented: conversational session prompt and message-history APIs
+- Implemented: SSE event endpoint, provider registration, model selection, streamed assistant replies, and built-in filesystem/shell tool execution
+- Remaining: broader route parity, pagination/cursor semantics, durable repository-backed session/event storage, tool-result conversation state/continuations, and API integration tests
 
-### Phase 6: Client — PENDING
+### Phase 6: Client — IN PROGRESS
 Port HTTP client.
 - Depends on: Protocol
+- Implemented: minimal HTTP client for server health, session creation, prompt submission, and message history
 
 ### Phase 7: Sdk — PENDING
 Port embedded host.
 - Depends on: Client, Core, Server
 
-### Phase 8: Cli / Tui / Plugin — PENDING
+### Phase 8: Cli / Tui / Plugin — IN PROGRESS
 Port CLI entry point, TUI, and plugin system.
 - Depends on: Sdk
+- Implemented: minimal interactive terminal chat TUI backed by the HTTP client
+- Remaining: full-screen terminal UX, live SSE rendering, commands, CLI entry point, and plugin integration
 
 ---
 

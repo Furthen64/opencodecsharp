@@ -52,19 +52,41 @@ public interface ISessionService
 }
 
 public record SessionAdmitted(
+    long AdmittedSeq,
     string SessionId,
     string MessageId,
     SessionPrompt Prompt,
-    SessionInputDelivery Delivery
+    SessionInputDelivery Delivery,
+    long TimeCreated
 );
 
 public class SessionStore
 {
     readonly Dictionary<string, Schema.SessionInfo> sessions = new();
+    readonly Dictionary<string, List<Schema.SessionMessageBase>> messages = new();
 
     public Task<Schema.SessionInfo?> GetAsync(string sessionId) => Task.FromResult(sessions.TryGetValue(sessionId, out var s) ? s : null);
-    public Task SetAsync(Schema.SessionInfo session) { sessions[session.Id] = session; return Task.CompletedTask; }
+    public Task SetAsync(Schema.SessionInfo session)
+    {
+        sessions[session.Id] = session;
+        messages.TryAdd(session.Id, []);
+        return Task.CompletedTask;
+    }
     public Task<List<Schema.SessionInfo>> AllAsync() => Task.FromResult(new List<Schema.SessionInfo>(sessions.Values));
+    public Task<List<Schema.SessionMessageBase>> MessagesAsync(string sessionId) =>
+        Task.FromResult(messages.TryGetValue(sessionId, out var list) ? list : new List<Schema.SessionMessageBase>());
+    public Task AddMessageAsync(string sessionId, Schema.SessionMessageBase message)
+    {
+        messages.GetValueOrDefault(sessionId, []).Add(message);
+        return Task.CompletedTask;
+    }
+    public Task ReplaceMessageAsync(string sessionId, string messageId, Schema.SessionMessageBase message)
+    {
+        var list = messages.GetValueOrDefault(sessionId, []);
+        var index = list.FindIndex(current => current.Id == messageId);
+        if (index >= 0) list[index] = message;
+        return Task.CompletedTask;
+    }
 }
 
 public sealed class SessionService : ISessionService
@@ -72,13 +94,15 @@ public sealed class SessionService : ISessionService
     private readonly SessionStore store;
     private readonly ISessionExecution execution;
     private readonly IProjectService projects;
-    private readonly Dictionary<string, List<Schema.SessionMessageBase>> messages = new();
+    private readonly IEventService events;
+    private long admittedSequence;
 
-    public SessionService(SessionStore store, ISessionExecution execution, IProjectService projects)
+    public SessionService(SessionStore store, ISessionExecution execution, IProjectService projects, IEventService events)
     {
         this.store = store;
         this.execution = execution;
         this.projects = projects;
+        this.events = events;
     }
 
     public async Task<List<Schema.SessionInfo>> ListAsync(SessionListInput? input = null)
@@ -113,7 +137,6 @@ public sealed class SessionService : ISessionService
             null,
             null);
         await store.SetAsync(session);
-        messages.TryAdd(session.Id, []);
         return session;
     }
 
@@ -123,7 +146,7 @@ public sealed class SessionService : ISessionService
     public async Task<List<object>> MessagesAsync(SessionMessagesInput input)
     {
         await GetAsync(input.SessionId);
-        var all = messages.GetValueOrDefault(input.SessionId, []);
+        var all = await store.MessagesAsync(input.SessionId);
         var ordered = input.Order?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true
             ? all.OrderBy(message => message.Created)
             : all.OrderByDescending(message => message.Created);
@@ -133,7 +156,7 @@ public sealed class SessionService : ISessionService
     public async Task<object?> MessageAsync(string sessionId, string messageId)
     {
         await GetAsync(sessionId);
-        return messages.GetValueOrDefault(sessionId, []).FirstOrDefault(message => message.Id == messageId);
+        return (await store.MessagesAsync(sessionId)).FirstOrDefault(message => message.Id == messageId);
     }
 
     public async Task<List<object>> ContextAsync(string sessionId)
@@ -148,11 +171,23 @@ public sealed class SessionService : ISessionService
         var messageId = input.Id ?? Schema.MessageId.Create();
         var prompt = new SessionPrompt(input.Prompt.Text, null, null);
         var created = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-        messages.GetValueOrDefault(input.SessionId, []).Add(new Schema.SessionMessageUser(
+        await store.AddMessageAsync(input.SessionId, new Schema.SessionMessageUser(
             messageId, null, created, "user", input.Prompt.Text, null, null));
+        await events.PublishAsync(new EventDefinition("session.next.prompted", true, "SessionId", 1), new
+        {
+            SessionId = input.SessionId,
+            MessageID = messageId,
+            Prompt = new { Text = input.Prompt.Text },
+        });
         if (input.Resume != false)
             await execution.WakeAsync(input.SessionId);
-        return new SessionAdmitted(input.SessionId, messageId, prompt, input.Delivery ?? SessionInputDelivery.Steer);
+        return new SessionAdmitted(
+            Interlocked.Increment(ref admittedSequence),
+            input.SessionId,
+            messageId,
+            prompt,
+            input.Delivery ?? SessionInputDelivery.Steer,
+            created);
     }
 
     public async Task SwitchAgentAsync(SessionSwitchAgentInput input)

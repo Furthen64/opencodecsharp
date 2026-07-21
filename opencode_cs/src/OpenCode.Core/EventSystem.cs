@@ -47,6 +47,7 @@ public class InvalidDurableEventError : Exception
 public interface IEventService
 {
     Task<EventPayload> PublishAsync(EventDefinition definition, object data, PublishOptions? options = null);
+    IDisposable Subscribe(Action<EventPayload> listener);
     Task UnsubscribeAsync(CancellationToken ct);
     Task RemoveAsync(string aggregateId);
     Task ClaimAsync(string aggregateId, string ownerId);
@@ -55,7 +56,7 @@ public interface IEventService
 
 public class EventService : IEventService, IDisposable
 {
-    readonly ConcurrentDictionary<string, List<Action<EventPayload>>> listeners = new();
+    readonly ConcurrentDictionary<string, Action<EventPayload>> listeners = new();
     readonly ConcurrentDictionary<string, Channel<EventPayload>> typedChannels = new();
     readonly ConcurrentDictionary<string, Channel<bool>> durableWakes = new();
     readonly object lockObj = new();
@@ -98,6 +99,13 @@ public class EventService : IEventService, IDisposable
         await NotifyTypedChannelAsync(payload);
 
         return payload;
+    }
+
+    public IDisposable Subscribe(Action<EventPayload> listener)
+    {
+        var id = Guid.NewGuid().ToString("N");
+        listeners[id] = listener;
+        return new Subscription(() => listeners.TryRemove(id, out _));
     }
 
     static string ExtractSessionId(object data)
@@ -153,7 +161,7 @@ public class EventService : IEventService, IDisposable
 
     async Task NotifyListenersAsync(EventPayload payload)
     {
-        var allListeners = listeners.Values.SelectMany(l => l).ToList();
+        var allListeners = listeners.Values.ToList();
         foreach (var listener in allListeners)
         {
             try
@@ -226,5 +234,10 @@ public class EventService : IEventService, IDisposable
     public void Dispose()
     {
         UnsubscribeAsync(CancellationToken.None).Wait();
+    }
+
+    sealed class Subscription(Action unsubscribe) : IDisposable
+    {
+        public void Dispose() => unsubscribe();
     }
 }

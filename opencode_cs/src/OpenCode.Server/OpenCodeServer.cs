@@ -1,8 +1,11 @@
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using OpenCode.Core;
+using OpenCode.Core.AI;
+using OpenCode.Core.AI.Providers;
 using OpenCode.Data;
 using OpenCode.Protocol;
 using Schema = OpenCode.Schema;
@@ -32,7 +35,25 @@ public static class OpenCodeServer
         services.AddSingleton<IEventService, EventService>();
         services.AddSingleton<IQuestionService, QuestionService>();
         services.AddSingleton<ISkillService, SkillService>();
+        services.AddSingleton<IProviderPlugin, OpenAIProviderPlugin>();
+        services.AddSingleton<IProviderPlugin, AnthropicProviderPlugin>();
+        services.AddSingleton<IProviderPlugin, GoogleProviderPlugin>();
+        services.AddSingleton<IProviderPlugin, OpenAICompatibleProviderPlugin>();
+        services.AddSingleton<IAISDKService>(provider =>
+        {
+            var sdk = new AISDKService();
+            foreach (var plugin in provider.GetServices<IProviderPlugin>())
+            {
+                sdk.RegisterSdkHookAsync(plugin.CreateSdkAsync).GetAwaiter().GetResult();
+                sdk.RegisterLanguageHookAsync(plugin.CreateLanguageAsync).GetAwaiter().GetResult();
+            }
+            return sdk;
+        });
+        services.AddSingleton<ILLMClient, ModelLLMClient>();
+        services.AddSingleton<IModelResolver, ServerModelResolver>();
+        services.AddSingleton<IToolRegistry, ToolRegistry>();
         services.AddSingleton<SessionStore>();
+        services.AddSingleton<ISessionRunner, SessionRunner>();
         services.AddSingleton<ISessionExecution, SessionExecution>();
         services.AddSingleton<ISessionService, SessionService>();
         services.AddSingleton<Database>();
@@ -94,6 +115,9 @@ public static class OpenCodeServer
             Results.Ok(new QuestionRequestListResponse((await questions.ListAsync()).ToList())))
             .WithName("QuestionList");
 
+        endpoints.MapGet("/event", StreamEventsAsync)
+            .WithName("EventSubscribe");
+
         endpoints.MapGet("/session", async ([AsParameters] SessionsQuery query, ISessionService sessions) =>
         {
             var data = await sessions.ListAsync(new SessionListInput(
@@ -127,6 +151,57 @@ public static class OpenCodeServer
             Results.Ok(await sessions.GetAsync(sessionId)))
             .WithName("SessionGet");
 
+        endpoints.MapGet("/session/{sessionId}/message", async (
+            string sessionId,
+            int? limit,
+            string? order,
+            string? cursor,
+            ISessionService sessions) =>
+        {
+            var data = await sessions.MessagesAsync(new SessionMessagesInput(
+                sessionId,
+                limit,
+                order,
+                null));
+            return Results.Ok(new SessionMessagesResponse(data, new PaginationCursor(null, null)));
+        }).WithName("SessionMessages");
+
+        endpoints.MapGet("/session/{sessionId}/message/{messageId}", async (
+            string sessionId,
+            string messageId,
+            ISessionService sessions) =>
+        {
+            var message = await sessions.MessageAsync(sessionId, messageId);
+            return message is null
+                ? Results.NotFound(new MessageNotFoundError(sessionId, messageId, $"Message not found: {messageId}"))
+                : Results.Ok(message);
+        }).WithName("SessionMessageGet");
+
+        endpoints.MapPost("/session/{sessionId}/message", async (
+            string sessionId,
+            SessionPromptRequest request,
+            ISessionService sessions) =>
+        {
+            var admitted = await sessions.PromptAsync(new SessionPromptInput(
+                request.Id,
+                sessionId,
+                request.Prompt,
+                ToCoreDelivery(request.Delivery),
+                request.Resume));
+            var response = new Schema.SessionInputAdmitted(
+                admitted.AdmittedSeq,
+                admitted.MessageId,
+                admitted.SessionId,
+                new Schema.Prompt(
+                    admitted.Prompt.Text ?? string.Empty,
+                    admitted.Prompt.Files?.Select(file => new Schema.FileAttachment(file.Uri, file.Mime ?? "", file.Name, null, null)).ToArray(),
+                    admitted.Prompt.Agents?.Select(agent => new Schema.AgentAttachment(agent, null)).ToArray()),
+                admitted.Delivery == SessionInputDelivery.Queue ? Schema.SessionDelivery.Queue : Schema.SessionDelivery.Steer,
+                admitted.TimeCreated,
+                null);
+            return Results.Ok(new SessionPromptResponse(response));
+        }).WithName("SessionPrompt");
+
         endpoints.MapPost("/session/{sessionId}/abort", async (string sessionId, ISessionService sessions) =>
         {
             await sessions.InterruptAsync(sessionId);
@@ -153,6 +228,16 @@ public static class OpenCodeServer
         var paths = GlobalPathsBuilder.Create();
         await GlobalPathsBuilder.EnsureDirectoriesAsync(paths);
         await app.Services.GetRequiredService<Database>().InitializeAsync();
+
+        var directory = app.Services.GetRequiredService<OpenCodeServerOptions>().Directory;
+        var fs = app.Services.GetRequiredService<IFsUtil>();
+        var tools = app.Services.GetRequiredService<IToolRegistry>();
+        await tools.RegisterAsync("read", new ReadTool(fs, directory));
+        await tools.RegisterAsync("write", new WriteTool(fs, directory));
+        await tools.RegisterAsync("edit", new EditTool(fs, directory));
+        await tools.RegisterAsync("glob", new GlobTool(fs, directory));
+        await tools.RegisterAsync("grep", new GrepTool(fs, directory));
+        await tools.RegisterAsync("bash", new BashTool(fs, directory));
     }
 
     private static Schema.AgentInfo ToSchemaAgent(OpenCode.Core.AgentInfo agent)
@@ -180,9 +265,67 @@ public static class OpenCodeServer
         "all" => Schema.AgentMode.All,
         _ => Schema.AgentMode.Primary,
     };
+
+    private static SessionInputDelivery? ToCoreDelivery(Schema.SessionDelivery? delivery) => delivery switch
+    {
+        Schema.SessionDelivery.Steer => SessionInputDelivery.Steer,
+        Schema.SessionDelivery.Queue => SessionInputDelivery.Queue,
+        _ => null,
+    };
+
+    private static async Task StreamEventsAsync(HttpContext context, IEventService events)
+    {
+        context.Response.Headers.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache, no-transform";
+        context.Response.Headers.Append("X-Accel-Buffering", "no");
+        context.Response.Headers.Append("X-Content-Type-Options", "nosniff");
+
+        var channel = Channel.CreateUnbounded<OpenCode.Core.EventPayload>();
+        using var subscription = events.Subscribe(payload => channel.Writer.TryWrite(payload));
+
+        await WriteSseAsync(context, new { id = Guid.NewGuid().ToString("N"), type = "server.connected", properties = new { } });
+        try
+        {
+            await foreach (var payload in channel.Reader.ReadAllAsync(context.RequestAborted))
+            {
+                await WriteSseAsync(context, new
+                {
+                    id = payload.Id,
+                    type = payload.Type,
+                    properties = payload.Data,
+                });
+            }
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        {
+        }
+    }
+
+    private static async Task WriteSseAsync(HttpContext context, object payload)
+    {
+        var json = JsonSerializer.Serialize(payload, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        await context.Response.WriteAsync($"event: message\nid: {Guid.NewGuid():N}\ndata: {json}\n\n", context.RequestAborted);
+        await context.Response.Body.FlushAsync(context.RequestAborted);
+    }
 }
 
 public record VcsInfoResponse(string? Branch, string? DefaultBranch);
+
+public sealed class ServerModelResolver(IConfiguration configuration) : IModelResolver
+{
+    public Task<string> ResolveAsync(Schema.SessionInfo session)
+    {
+        if (session.Model is not null)
+            return Task.FromResult($"{session.Model.ProviderId}/{session.Model.Id}");
+
+        var configured = configuration["OpenCode:Model"];
+        if (!string.IsNullOrWhiteSpace(configured))
+            return Task.FromResult(configured);
+
+        throw new InvalidOperationException(
+            "No model is configured. Set OpenCode:Model (for example openai/gpt-4o-mini) or provide model when creating the session.");
+    }
+}
 
 public static class ServerErrors
 {

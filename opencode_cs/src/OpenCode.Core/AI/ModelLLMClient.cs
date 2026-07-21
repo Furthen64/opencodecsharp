@@ -23,6 +23,16 @@ public class ModelLLMClient : ILLMClient
         var parts = modelRef.Split('/', 2);
         var providerId = parts.Length > 1 ? parts[0] : modelRef;
         var modelId = parts.Length > 1 ? parts[1] : modelRef;
+        var requestBody = new Dictionary<string, object>();
+        string? baseUrl = null;
+
+        if (providerId == "opencode")
+        {
+            baseUrl = "https://opencode.ai/zen/v1";
+            var apiKey = Environment.GetEnvironmentVariable("OPENCODE_API_KEY");
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                requestBody["apiKey"] = apiKey;
+        }
 
         var modelInfo = new Schema.ModelInfo(
             Id: modelId,
@@ -33,7 +43,7 @@ public class ModelLLMClient : ILLMClient
                 Id: modelId,
                 Type: "aisdk",
                 Package: ResolvePackage(providerId),
-                Url: null,
+                Url: baseUrl,
                 Settings: null),
             Capabilities: new Schema.ModelCapabilities(
                 Tools: true,
@@ -41,7 +51,7 @@ public class ModelLLMClient : ILLMClient
                 Output: new[] { "text" }),
             Request: new Schema.ModelRequest(
                 Headers: new Dictionary<string, string>(),
-                Body: new Dictionary<string, object>(),
+                Body: requestBody,
                 Variant: null),
             Variants: Array.Empty<Schema.ModelVariant>(),
             Time: new Schema.ModelTime(Released: 0),
@@ -65,6 +75,7 @@ public class ModelLLMClient : ILLMClient
         Schema.ProviderIds.OpenAI => "@ai-sdk/openai",
         Schema.ProviderIds.Anthropic => "@ai-sdk/anthropic",
         Schema.ProviderIds.Google => "@ai-sdk/google",
+        "opencode" => "@ai-sdk/openai-compatible",
         _ => "@ai-sdk/openai-compatible"
     };
 }

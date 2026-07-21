@@ -2,10 +2,12 @@
 
   <ItemGroup>
     <ProjectReference Include="..\OpenCode.Sdk\OpenCode.Sdk.csproj" />
+    <ProjectReference Include="..\OpenCode.Client\OpenCode.Client.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>

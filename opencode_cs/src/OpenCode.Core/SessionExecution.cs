@@ -14,8 +14,11 @@ public interface ISessionExecution
 
 public class SessionExecution : ISessionExecution
 {
+    readonly ISessionRunner runner;
     readonly HashSet<string> active = new();
     readonly object lockObj = new();
+
+    public SessionExecution(ISessionRunner runner) => this.runner = runner;
 
     public Task WakeAsync(string sessionId)
     {
@@ -23,6 +26,7 @@ public class SessionExecution : ISessionExecution
         {
             active.Add(sessionId);
         }
+        _ = RunAsync(sessionId, false);
         return Task.CompletedTask;
     }
 
@@ -32,6 +36,7 @@ public class SessionExecution : ISessionExecution
         {
             active.Add(sessionId);
         }
+        _ = RunAsync(sessionId, true);
         return Task.CompletedTask;
     }
 
@@ -41,7 +46,7 @@ public class SessionExecution : ISessionExecution
         {
             active.Remove(sessionId);
         }
-        return Task.CompletedTask;
+        return runner.InterruptAsync(sessionId);
     }
 
     public Task<HashSet<string>> ActiveAsync()
@@ -49,6 +54,21 @@ public class SessionExecution : ISessionExecution
         lock (lockObj)
         {
             return Task.FromResult(new HashSet<string>(active));
+        }
+    }
+
+    async Task RunAsync(string sessionId, bool force)
+    {
+        try
+        {
+            await runner.RunAsync(sessionId, force);
+        }
+        finally
+        {
+            lock (lockObj)
+            {
+                active.Remove(sessionId);
+            }
         }
     }
 }

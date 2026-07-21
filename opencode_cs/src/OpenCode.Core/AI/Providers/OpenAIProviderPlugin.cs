@@ -87,7 +87,8 @@ public class OpenAILanguageModel : ILanguageModel
         ProviderId = providerId;
 
         httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {config.ApiKey}");
+        if (!string.IsNullOrWhiteSpace(config.ApiKey))
+            httpClient.DefaultRequestHeaders.Add("Authorization", $"Bearer {config.ApiKey}");
         httpClient.DefaultRequestHeaders.Add("User-Agent", "opencode-csharp/1.0");
 
         if (config.Headers != null)
@@ -114,6 +115,7 @@ public class OpenAILanguageModel : ILanguageModel
 
         using var stream = await httpResp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
+        var pendingToolCalls = new Dictionary<int, PendingToolCall>();
 
         while (!reader.EndOfStream)
         {
@@ -146,22 +148,29 @@ public class OpenAILanguageModel : ILanguageModel
                 {
                     foreach (var tc in choice.Delta.ToolCalls)
                     {
-                        if (tc.Function?.Arguments != null && tc.Function.Name != null)
-                        {
-                            var input = JsonSerializer.Deserialize<Dictionary<string, object>>(
-                                tc.Function.Arguments, SerializerDefaults.JsonOptions)
-                                ?? new Dictionary<string, object>();
-
-                            yield return new LLMStreamEvent(
-                                "tool_call", null,
-                                new LLMToolCall(tc.Id ?? $"call_{tc.Index}", tc.Function.Name, input),
-                                null, null, null);
-                        }
+                        if (!pendingToolCalls.TryGetValue(tc.Index, out var pending))
+                            pendingToolCalls[tc.Index] = pending = new PendingToolCall(tc.Index);
+                        pending.Id ??= tc.Id;
+                        pending.Name ??= tc.Function?.Name;
+                        if (tc.Function?.Arguments is not null)
+                            pending.Arguments.Append(tc.Function.Arguments);
                     }
                 }
 
                 if (choice.FinishReason == "tool_calls")
                 {
+                    foreach (var pending in pendingToolCalls.Values)
+                    {
+                        if (string.IsNullOrWhiteSpace(pending.Name))
+                            continue;
+                        var input = JsonSerializer.Deserialize<Dictionary<string, object>>(
+                            pending.Arguments.ToString(), SerializerDefaults.JsonOptions)
+                            ?? new Dictionary<string, object>();
+                        yield return new LLMStreamEvent(
+                            "tool_call", null,
+                            new LLMToolCall(pending.Id ?? $"call_{pending.Index}", pending.Name, input),
+                            null, null, null);
+                    }
                     yield break;
                 }
             }
@@ -271,6 +280,16 @@ file class ChunkFunction
 
     [JsonPropertyName("arguments")]
     public string? Arguments { get; set; }
+}
+
+file class PendingToolCall
+{
+    public int Index { get; }
+    public string? Id { get; set; }
+    public string? Name { get; set; }
+    public StringBuilder Arguments { get; } = new();
+
+    public PendingToolCall(int index) => Index = index;
 }
 
 file class ChunkUsage

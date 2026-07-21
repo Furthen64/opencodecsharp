@@ -110,6 +110,10 @@ public record SessionMessageProviderInfo(
     LLMProviderMetadata? ResultMetadata
 );
 
+[JsonPolymorphic]
+[JsonDerivedType(typeof(SessionMessageTool), typeDiscriminator: "tool")]
+[JsonDerivedType(typeof(SessionMessageText), typeDiscriminator: "text")]
+[JsonDerivedType(typeof(SessionMessageReasoning), typeDiscriminator: "reasoning")]
 public abstract record SessionMessageAssistantContent;
 
 public record SessionMessageTool(
