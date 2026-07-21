@@ -1,0 +1,14 @@
+The installed .NET 10 SDK is missing its workload-locator SDK imports. OpenCode
+does not use workloads, but restore/build fails before compiling with MSB4276
+until these no-op locator files exist.
+
+Run from any shell with permission to write /usr/lib/dotnet:
+
+sudo install -d /usr/lib/dotnet/sdk/10.0.110/Sdks/Microsoft.NET.SDK.WorkloadAutoImportPropsLocator/Sdk /usr/lib/dotnet/sdk/10.0.110/Sdks/Microsoft.NET.SDK.WorkloadManifestTargetsLocator/Sdk
+printf '<Project />\n' | sudo tee /usr/lib/dotnet/sdk/10.0.110/Sdks/Microsoft.NET.SDK.WorkloadAutoImportPropsLocator/Sdk/AutoImport.props >/dev/null
+printf '<Project />\n' | sudo tee /usr/lib/dotnet/sdk/10.0.110/Sdks/Microsoft.NET.SDK.WorkloadManifestTargetsLocator/Sdk/WorkloadManifest.targets >/dev/null
+
+Then verify from this repository:
+
+dotnet restore opencode_cs/OpenCode.slnx
+dotnet build opencode_cs/OpenCode.slnx --no-restore

@@ -1,0 +1,7 @@
+<Project>
+  <!-- The packaged .NET 10 SDK in this environment has no workload resolver SDKs.
+       OpenCode does not use workloads, so skip resolving them during restore/build. -->
+  <PropertyGroup>
+    <MSBuildEnableWorkloadResolver>false</MSBuildEnableWorkloadResolver>
+  </PropertyGroup>
+</Project>

@@ -13,7 +13,7 @@ Port the OpenCode TypeScript monorepo (~32 packages, Effect TS/Drizzle/Hono/Soli
 - Effect TS replacement strategy (what to use for functional error handling / effect system)
 - UI port vs keep JS (SolidJS parts)
 - TUI framework choice
-- ORM choice (Drizzle alternative)
+- ~~ORM choice (Drizzle alternative)~~ → Dapper + Microsoft.Data.Sqlite
 
 ## Naming Convention
 - TS uses nested namespaces (`Schema.Agent.Info`), C# uses flat naming (`AgentInfo`)
@@ -31,7 +31,7 @@ All protocol definitions ported as C# records (~18 files).
 - Added missing schema types: `PermissionSaved.cs`, `PtyTicket.cs`, `ProjectCopy.cs`, `Workspace.cs`
 - Fixed namespace naming to align with flat C# conventions
 
-### Phase 3: Core Runtime — 🚧 IN PROGRESS
+### Phase 3: Core Runtime — ✅ COMPLETE
 Ported foundations:
 - CoreSchema: path/int helpers, model ref parsing
 - GlobalPaths: XDG-compliant path resolution
@@ -64,14 +64,18 @@ New in this session:
 - **Session**: SessionCompactionService (auto-compaction with LLM summarization), SessionRevertService (stage/clear/commit with snapshots), SessionMessageUpdater (event reducer translating 20+ session events to message state)
 - **LLM**: AISDKService (two-phase hook system for SDK/language model creation), ProviderRegistry (plugin registration)
 
-Remaining:
-- Concrete provider plugins (OpenAI, Anthropic, Google, etc.)
-- Session history persistence (requires Data Layer)
-- Session store DB queries
-- Depends on: Schema, Protocol
+New in this session (provider plugins + data):
+- **AI Abstractions**: ILanguageModel interface, SerializerDefaults, LanguageModelConfig
+- **Provider Plugins**: OpenAIProviderPlugin (SSE streaming chat completions), AnthropicProviderPlugin (Messages API with thinking/tool streaming), GoogleProviderPlugin (Generative AI streaming), OpenAICompatibleProviderPlugin (generic fallback)
+- **Language Models**: OpenAILanguageModel, AnthropicLanguageModel, GoogleLanguageModel, OpenAICompatibleLanguageModel (all with full SSE streaming, tool call parsing, usage tracking)
+- **LLM Bridge**: ModelLLMClient (ILLMClient impl bridging AISDKService to SessionRunner)
+- **Data Layer**: Database (WAL-mode SQLite with migration runner), Schema (13 tables + indexes DDL), ProjectRepository, SessionRepository, MessageRepository, EventRepository, CredentialRepository, PermissionRepository
 
-### Phase 4: Data Layer — PENDING
-Port SQLite data access (Drizzle → ADO.NET / Dapper / EF Core).
+### Phase 4: Data Layer — ✅ COMPLETE
+SQLite data access ported (Drizzle → Microsoft.Data.Sqlite + Dapper).
+- 13 tables: project, session, message, session_message, session_input, session_context_epoch, todo, event_sequence, event, credential, permission, session_share, migration
+- Full CRUD repositories for all entities
+- WAL-mode SQLite with auto-migration on startup
 - Depends on: Schema
 
 ### Phase 5: Server — PENDING
