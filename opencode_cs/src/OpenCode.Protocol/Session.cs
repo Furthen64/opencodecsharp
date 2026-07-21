@@ -29,6 +29,15 @@ public record SessionCreateRequest(
     LocationRef? Location
 );
 
+public record SessionUpdateRequest(
+    string? Title,
+    SessionUpdateTimeRequest? Time
+);
+
+public record SessionUpdateTimeRequest(
+    long? Archived
+);
+
 public record SessionActiveResponse(
     Dictionary<string, SessionActiveStatus> Data
 );

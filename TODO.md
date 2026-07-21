@@ -81,7 +81,8 @@ SQLite data access ported (Drizzle → Microsoft.Data.Sqlite + Dapper).
 ### Phase 5: Server — IN PROGRESS
 Port ASP.NET Core Minimal APIs (Hono → Minimal APIs).
 - Depends on: Core, Protocol, Data
-- Implemented: health/path, agent/skill/VCS/question, session lifecycle and status APIs
+- Implemented: health/path, project list/current, agent/skill/VCS/question (including reply/reject), session create/get/list/update/delete/children, status, and todo APIs
+- Implemented: confined file listing/content reads, filename search, and regular-expression text search APIs
 - Implemented: conversational session prompt and message-history APIs
 - Implemented: SSE event endpoint, provider registration, model selection, streamed assistant replies, and built-in filesystem/shell tool execution
 - Implemented: opaque bidirectional pagination cursors for session and message lists, with API integration coverage

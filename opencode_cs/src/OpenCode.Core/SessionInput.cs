@@ -29,6 +29,12 @@ public record SessionCreateInput(
     LocationRef Location
 );
 
+public record SessionUpdateInput(
+    string SessionId,
+    string? Title,
+    long? Archived
+);
+
 public record SessionCompactInput(
     string SessionId,
     string? Prompt

@@ -38,6 +38,9 @@ public interface ISessionService
     Task<List<Schema.SessionInfo>> ListAsync(SessionListInput? input = null);
     Task<Schema.SessionInfo> CreateAsync(SessionCreateInput input);
     Task<Schema.SessionInfo> GetAsync(string sessionId);
+    Task<List<Schema.SessionInfo>> ChildrenAsync(string sessionId);
+    Task<Schema.SessionInfo> UpdateAsync(SessionUpdateInput input);
+    Task RemoveAsync(string sessionId);
     Task<List<object>> MessagesAsync(SessionMessagesInput input);
     Task<object?> MessageAsync(string sessionId, string messageId);
     Task<List<object>> ContextAsync(string sessionId);
@@ -78,6 +81,12 @@ public class SessionStore
     public Task AddMessageAsync(string sessionId, Schema.SessionMessageBase message)
     {
         messages.GetValueOrDefault(sessionId, []).Add(message);
+        return Task.CompletedTask;
+    }
+    public Task RemoveAsync(string sessionId)
+    {
+        sessions.Remove(sessionId);
+        messages.Remove(sessionId);
         return Task.CompletedTask;
     }
     public Task ReplaceMessageAsync(string sessionId, string messageId, Schema.SessionMessageBase message)
@@ -156,6 +165,45 @@ public sealed class SessionService : ISessionService
 
     public async Task<Schema.SessionInfo> GetAsync(string sessionId) =>
         await store.GetAsync(sessionId) ?? throw new SessionNotFoundError(sessionId);
+
+    public async Task<List<Schema.SessionInfo>> ChildrenAsync(string sessionId)
+    {
+        await GetAsync(sessionId);
+        return (await store.AllAsync())
+            .Where(session => session.ParentId == sessionId)
+            .OrderByDescending(session => session.Time.Created)
+            .ThenByDescending(session => session.Id, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public async Task<Schema.SessionInfo> UpdateAsync(SessionUpdateInput input)
+    {
+        var current = await GetAsync(input.SessionId);
+        var updated = current with
+        {
+            Title = input.Title ?? current.Title,
+            Time = current.Time with
+            {
+                Updated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Archived = input.Archived ?? current.Time.Archived,
+            },
+        };
+        await store.SetAsync(updated);
+        await events.PublishAsync(
+            new EventDefinition("session.updated", true, "SessionId", 1),
+            new { SessionId = updated.Id, Info = updated });
+        return updated;
+    }
+
+    public async Task RemoveAsync(string sessionId)
+    {
+        await GetAsync(sessionId);
+        await execution.InterruptAsync(sessionId);
+        await store.RemoveAsync(sessionId);
+        await events.PublishAsync(
+            new EventDefinition("session.deleted", true, "SessionId", 1),
+            new { SessionId = sessionId, Info = new { Id = sessionId } });
+    }
 
     public async Task<List<object>> MessagesAsync(SessionMessagesInput input)
     {

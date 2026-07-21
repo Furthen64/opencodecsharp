@@ -30,11 +30,15 @@ public static class OpenCodeServer
         services.AddSingleton(new OpenCodeServerOptions { Directory = directory });
 
         services.AddSingleton<IFsUtil, FsUtil>();
+        services.AddSingleton<IFileBrowserService>(provider => new FileBrowserService(
+            provider.GetRequiredService<IFsUtil>(),
+            provider.GetRequiredService<OpenCodeServerOptions>().Directory));
         services.AddSingleton<IGitService, GitService>();
         services.AddSingleton<IAgentService, AgentService>();
         services.AddSingleton<IProjectService, ProjectService>();
         services.AddSingleton<IEventService, EventService>();
         services.AddSingleton<IQuestionService, QuestionService>();
+        services.AddSingleton<ISessionTodoService, SessionTodoService>();
         services.AddSingleton<ISkillService, SkillService>();
         services.AddSingleton<IProviderPlugin, OpenAIProviderPlugin>();
         services.AddSingleton<IProviderPlugin, AnthropicProviderPlugin>();
@@ -79,6 +83,16 @@ public static class OpenCodeServer
             });
         }).WithName("InstancePath");
 
+        endpoints.MapGet("/project", async (IProjectService projects) =>
+            Results.Ok((await projects.AllAsync()).Select(ToSchemaProject).ToList()))
+            .WithName("ProjectList");
+
+        endpoints.MapGet("/project/current", async (
+            OpenCodeServerOptions options,
+            IProjectService projects) =>
+            Results.Ok(ToSchemaProject(await projects.ResolveAsync(options.Directory))))
+            .WithName("ProjectCurrent");
+
         endpoints.MapGet("/agent", async (IAgentService agents) =>
         {
             var data = (await agents.AllAsync()).Select(ToSchemaAgent).ToList();
@@ -112,9 +126,67 @@ public static class OpenCodeServer
             return Results.Text(patch, "text/x-diff; charset=utf-8");
         }).WithName("VcsDiffRaw");
 
+        endpoints.MapGet("/file", async (string path, IFileBrowserService files) =>
+            Results.Ok((await files.ListAsync(path)).Select(item => new FileNode(
+                item.Name, item.Path, item.Absolute, item.Type, item.Ignored))))
+            .WithName("FileList");
+
+        endpoints.MapGet("/file/content", async (string path, IFileBrowserService files) =>
+        {
+            var content = await files.ReadAsync(path);
+            return Results.Ok(new FileContent(content.Type, content.Content, content.Encoding, content.MimeType));
+        }).WithName("FileContent");
+
+        endpoints.MapGet("/find/file", async (
+            string query,
+            string? dirs,
+            string? type,
+            int? limit,
+            IFileBrowserService files) =>
+        {
+            var take = limit ?? 10;
+            if (take is < 1 or > 200)
+                return Results.BadRequest(new InvalidRequestError("Limit must be between 1 and 200.", "Query", "limit"));
+            if (dirs is not null && dirs is not ("true" or "false"))
+                return Results.BadRequest(new InvalidRequestError("Dirs must be 'true' or 'false'.", "Query", "dirs"));
+            if (type is not null && type is not ("file" or "directory"))
+                return Results.BadRequest(new InvalidRequestError("Type must be 'file' or 'directory'.", "Query", "type"));
+            var requestedType = type ?? (dirs == "false" ? "file" : null);
+            return Results.Ok(await files.FindAsync(query, requestedType, take));
+        }).WithName("FileFind");
+
+        endpoints.MapGet("/find", async (string pattern, IFileBrowserService files) =>
+        {
+            var matches = await files.FindTextAsync(pattern, 10);
+            return Results.Ok(matches.Select(match => new FileTextMatch(
+                new FileTextValue(match.Entry.Path),
+                new FileTextValue(match.Text),
+                match.Line,
+                match.Offset,
+                match.Submatches.Select(submatch => new FileTextSubmatch(
+                    new FileTextValue(submatch.Text), submatch.Start, submatch.End)).ToArray())));
+        }).WithName("FileFindText");
+
         endpoints.MapGet("/question", async (IQuestionService questions) =>
             Results.Ok(new QuestionRequestListResponse((await questions.ListAsync()).ToList())))
             .WithName("QuestionList");
+
+        endpoints.MapPost("/question/{requestId}/reply", async (
+            string requestId,
+            QuestionReplyRequest request,
+            IQuestionService questions) =>
+        {
+            await questions.ReplyAsync(new QuestionReplyInput(requestId, request.Answers));
+            return Results.Ok(true);
+        }).WithName("QuestionReply");
+
+        endpoints.MapPost("/question/{requestId}/reject", async (
+            string requestId,
+            IQuestionService questions) =>
+        {
+            await questions.RejectAsync(requestId);
+            return Results.Ok(true);
+        }).WithName("QuestionReject");
 
         endpoints.MapGet("/event", StreamEventsAsync)
             .WithName("EventSubscribe");
@@ -171,6 +243,35 @@ public static class OpenCodeServer
         endpoints.MapGet("/session/{sessionId}", async (string sessionId, ISessionService sessions) =>
             Results.Ok(await sessions.GetAsync(sessionId)))
             .WithName("SessionGet");
+
+        endpoints.MapGet("/session/{sessionId}/children", async (string sessionId, ISessionService sessions) =>
+            Results.Ok(await sessions.ChildrenAsync(sessionId)))
+            .WithName("SessionChildren");
+
+        endpoints.MapPatch("/session/{sessionId}", async (
+            string sessionId,
+            SessionUpdateRequest request,
+            ISessionService sessions) =>
+            Results.Ok(await sessions.UpdateAsync(new SessionUpdateInput(
+                sessionId,
+                request.Title,
+                request.Time?.Archived))))
+            .WithName("SessionUpdate");
+
+        endpoints.MapDelete("/session/{sessionId}", async (string sessionId, ISessionService sessions) =>
+        {
+            await sessions.RemoveAsync(sessionId);
+            return Results.Ok(true);
+        }).WithName("SessionDelete");
+
+        endpoints.MapGet("/session/{sessionId}/todo", async (
+            string sessionId,
+            ISessionService sessions,
+            ISessionTodoService todos) =>
+        {
+            await sessions.GetAsync(sessionId);
+            return Results.Ok(await todos.GetAsync(sessionId));
+        }).WithName("SessionTodo");
 
         endpoints.MapGet("/session/{sessionId}/message", async (
             string sessionId,
@@ -285,6 +386,16 @@ public static class OpenCodeServer
             agent.Permissions?.ToArray() ?? []);
     }
 
+    private static Schema.ProjectInfo ToSchemaProject(OpenCode.Core.ProjectInfo project) => new(
+        project.Id,
+        project.Directory,
+        project.Vcs?.Type.Equals("git", StringComparison.OrdinalIgnoreCase) == true ? Schema.ProjectVcs.Git : null,
+        Path.GetFileName(project.Directory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)),
+        null,
+        null,
+        new Schema.ProjectTime(project.Created, project.Updated, null),
+        []);
+
     private static Schema.AgentMode ParseAgentMode(string? mode) => mode?.ToLowerInvariant() switch
     {
         "subagent" => Schema.AgentMode.Subagent,
@@ -364,6 +475,8 @@ public static class ServerErrors
             QuestionNotFoundException notFound => (StatusCodes.Status404NotFound, new OpenCode.Protocol.QuestionNotFoundError(notFound.RequestId, notFound.Message)),
             PermissionBlockedError blocked => (StatusCodes.Status403Forbidden, new ForbiddenError(blocked.Message)),
             InvalidCursorException invalid => (StatusCodes.Status400BadRequest, new InvalidCursorError(invalid.Message)),
+            InvalidFilePathException invalid => (StatusCodes.Status400BadRequest, new InvalidRequestError(invalid.Message, "Query", "path")),
+            InvalidSearchPatternException invalid => (StatusCodes.Status400BadRequest, new InvalidRequestError(invalid.Message, "Query", "pattern")),
             _ => (StatusCodes.Status500InternalServerError, new UnknownError("An unexpected server error occurred.")),
         };
 

@@ -1,12 +1,15 @@
-using System.Collections.Generic;
-using System.Threading.Tasks;
+using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace OpenCode.Core;
 
 public record ProjectInfo(
     string Id,
     string Directory,
-    ProjectVcs? Vcs
+    ProjectVcs? Vcs,
+    long Created,
+    long Updated
 );
 
 public record ProjectVcs(
@@ -17,17 +20,40 @@ public record ProjectVcs(
 public interface IProjectService
 {
     Task<ProjectInfo> ResolveAsync(string directory);
+    Task<List<ProjectInfo>> AllAsync();
 }
 
 public class ProjectService : IProjectService
 {
-    readonly Dictionary<string, ProjectInfo> projects = new();
+    readonly IGitService git;
+    readonly ConcurrentDictionary<string, ProjectInfo> projects = new(StringComparer.Ordinal);
 
-    public Task<ProjectInfo> ResolveAsync(string directory)
+    public ProjectService(IGitService git)
     {
-        var id = System.Guid.NewGuid().ToString("n")[..10];
-        var project = new ProjectInfo(id, directory, null);
-        projects[directory] = project;
-        return Task.FromResult(project);
+        this.git = git;
     }
+
+    public async Task<ProjectInfo> ResolveAsync(string directory)
+    {
+        var resolvedDirectory = Path.GetFullPath(directory);
+        var repository = await git.DiscoverAsync(resolvedDirectory);
+        var worktree = repository?.Worktree ?? resolvedDirectory;
+        if (projects.TryGetValue(worktree, out var existing))
+            return existing;
+
+        var remote = repository is null ? null : await git.GetRemoteAsync(repository);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var id = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(worktree)))[..16].ToLowerInvariant();
+        return projects.GetOrAdd(worktree, new ProjectInfo(
+            id,
+            worktree,
+            repository is null ? null : new ProjectVcs("git", remote),
+            now,
+            now));
+    }
+
+    public Task<List<ProjectInfo>> AllAsync() => Task.FromResult(projects.Values
+        .OrderByDescending(project => project.Updated)
+        .ThenBy(project => project.Id, StringComparer.Ordinal)
+        .ToList());
 }

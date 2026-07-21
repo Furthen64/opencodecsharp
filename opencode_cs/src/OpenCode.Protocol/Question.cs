@@ -7,3 +7,7 @@ public record QuestionRequestListResponse(
 public record SessionQuestionListResponse(
     List<QuestionRequest> Data
 );
+
+public record QuestionReplyRequest(
+    string[][] Answers
+);

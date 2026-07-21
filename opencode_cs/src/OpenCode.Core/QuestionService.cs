@@ -74,7 +74,7 @@ public class QuestionService : IQuestionService
     public async Task ReplyAsync(QuestionReplyInput input)
     {
         if (!pending.TryRemove(input.RequestId, out var pendingItem))
-            return;
+            throw new QuestionNotFoundException(input.RequestId);
 
         await events.PublishAsync(
             new EventDefinition("question.v2.replied", false, null, 1),
@@ -92,7 +92,7 @@ public class QuestionService : IQuestionService
     public async Task RejectAsync(string requestId)
     {
         if (!pending.TryRemove(requestId, out var pendingItem))
-            return;
+            throw new QuestionNotFoundException(requestId);
 
         await events.PublishAsync(
             new EventDefinition("question.v2.rejected", false, null, 1),
