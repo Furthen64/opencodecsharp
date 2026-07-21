@@ -20,9 +20,17 @@ public interface IFsUtil
     string MimeType(string path);
     bool Overlaps(string a, string b);
     bool Contains(string parent, string child);
+    Task<bool> ExistsAsync(string path);
+    Task<FileStat> StatAsync(string path);
+    Task<byte[]> ReadFileBytesAsync(string path);
+    Task WriteFileBytesAsync(string path, byte[] content);
+    Task WriteFileStringAsync(string path, string content, bool append = false);
+    Task RemoveAsync(string path);
 }
 
 public record DirEntry(string Name, string Type);
+
+public record FileStat(string Type, long Size, long Modified);
 
 public class FsUtil : IFsUtil
 {
@@ -181,5 +189,61 @@ public class FsUtil : IFsUtil
     {
         var relative = Path.GetRelativePath(parent, child);
         return relative == "" || relative == "." || (!Path.IsPathRooted(relative) && !relative.StartsWith(".."));
+    }
+
+    public Task<bool> ExistsAsync(string path)
+    {
+        try
+        {
+            return Task.FromResult(File.Exists(path) || Directory.Exists(path));
+        }
+        catch
+        {
+            return Task.FromResult(false);
+        }
+    }
+
+    public Task<FileStat> StatAsync(string path)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists)
+        {
+            var dirInfo = new DirectoryInfo(path);
+            if (dirInfo.Exists)
+                return Task.FromResult(new FileStat("Directory", 0, new DateTimeOffset(dirInfo.LastWriteTimeUtc).ToUnixTimeMilliseconds()));
+            throw new FileNotFoundException($"Path not found: {path}");
+        }
+        return Task.FromResult(new FileStat("File", info.Length, new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds()));
+    }
+
+    public async Task<byte[]> ReadFileBytesAsync(string path)
+    {
+        return await File.ReadAllBytesAsync(path).ConfigureAwait(false);
+    }
+
+    public async Task WriteFileBytesAsync(string path, byte[] content)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (dir != null) Directory.CreateDirectory(dir);
+        await File.WriteAllBytesAsync(path, content).ConfigureAwait(false);
+    }
+
+    public async Task WriteFileStringAsync(string path, string content, bool append = false)
+    {
+        var dir = Path.GetDirectoryName(path);
+        if (dir != null) Directory.CreateDirectory(dir);
+        if (append)
+            await File.AppendAllTextAsync(path, content).ConfigureAwait(false);
+        else
+            await File.WriteAllTextAsync(path, content).ConfigureAwait(false);
+    }
+
+    public Task RemoveAsync(string path)
+    {
+        if (File.Exists(path))
+            File.Delete(path);
+        else if (Directory.Exists(path))
+            Directory.Delete(path, true);
+        return Task.CompletedTask;
     }
 }

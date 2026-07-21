@@ -31,7 +31,7 @@ All protocol definitions ported as C# records (~18 files).
 - Added missing schema types: `PermissionSaved.cs`, `PtyTicket.cs`, `ProjectCopy.cs`, `Workspace.cs`
 - Fixed namespace naming to align with flat C# conventions
 
-### Phase 3: Core Runtime — 🚧 IN PROGRESS (Mostly Done)
+### Phase 3: Core Runtime — 🚧 IN PROGRESS
 Ported foundations:
 - CoreSchema: path/int helpers, model ref parsing
 - GlobalPaths: XDG-compliant path resolution
@@ -46,16 +46,28 @@ Ported foundations:
 - Event system: EventService with pub/sub, durable events, serialized events
 - Permission system: PermissionService with evaluate/ask/assert/reply, wildcard matching
 - Session runner: SessionRunner with LLM streaming, tool execution loop, step bounds
-Ported:
 - Built-in tools (ReadTool, WriteTool, EditTool, BashTool, GlobTool, GrepTool, WebFetchTool) in `Tools/` folder
+- SystemContext: Key/Source/Snapshot/Generation, SystemContextService (initialize/reconcile/replace), SystemContextRegistry, SystemContextBuiltins (env + date sources)
+- InstructionContext: AGENTS.md discovery and system context source
+- ModelService: model ref parsing (`provider/model` format)
+- TokenEstimator: lightweight token count estimation
+- GitService: repository discovery, clone, create, remote/history, tree operations, patch capture/apply
+- SnapshotService: capture, files, diff, preview, restore, checkout (wraps GitService)
+- CredentialService: interface + InMemoryCredentialService
+- SkillService: skill source management, availability filtering
+- ReferenceService: reference source management with state transform pattern
+- Fixed Schema: added `[JsonDerivedType]` attributes to `SkillSource`
+
+New in this session:
+- **Tools**: ApplyPatchTool (patch parser, FileMutation, LocationMutation), QuestionTool, SkillTool, TodoWriteTool, WebSearchTool
+- **Services**: PatchParser (Begin/End format with Add/Delete/Update hunks), FileMutationService (create/write/writeIfUnchanged/remove with conditional writes), LocationMutationService (path resolution with internal/external boundary), QuestionService (ask/reply/reject with pending map), SessionTodoService (in-memory todo store)
+- **Session**: SessionCompactionService (auto-compaction with LLM summarization), SessionRevertService (stage/clear/commit with snapshots), SessionMessageUpdater (event reducer translating 20+ session events to message state)
+- **LLM**: AISDKService (two-phase hook system for SDK/language model creation), ProviderRegistry (plugin registration)
+
 Remaining:
-- LLM provider integration (actual provider clients)
-- Credentials system
-- Model/Provider resolution service
-- Session history, compaction, revert
-- System context, skills, references
-- Git integration
-- Snapshot system
+- Concrete provider plugins (OpenAI, Anthropic, Google, etc.)
+- Session history persistence (requires Data Layer)
+- Session store DB queries
 - Depends on: Schema, Protocol
 
 ### Phase 4: Data Layer — PENDING
