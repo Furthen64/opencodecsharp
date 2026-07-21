@@ -2,13 +2,19 @@ namespace OpenCode.Data;
 
 public sealed class Database
 {
-    private const string DefaultDbDir = "~/.local/share/opencode";
     private const string DefaultDbName = "opencode.db";
-    private const int BusyTimeoutMs = 5000;
-    private const int CacheSizeKb = 64000;
+    private readonly Lazy<Task> initialization;
 
-    private static readonly Lazy<string> LazyPath = new(ResolveDbPath);
-    public static string Path => LazyPath.Value;
+    public Database(string? path = null)
+    {
+        Path = System.IO.Path.GetFullPath(path ?? ResolveDbPath());
+        var directory = System.IO.Path.GetDirectoryName(Path);
+        if (!string.IsNullOrEmpty(directory))
+            System.IO.Directory.CreateDirectory(directory);
+        initialization = new Lazy<Task>(InitializeCoreAsync);
+    }
+
+    public string Path { get; }
 
     public SqliteConnection CreateConnection()
     {
@@ -18,7 +24,9 @@ public sealed class Database
         return connection;
     }
 
-    public async Task InitializeAsync()
+    public Task InitializeAsync() => initialization.Value;
+
+    private async Task InitializeCoreAsync()
     {
         await using var connection = CreateConnection();
         await EnsureMigrationTableAsync(connection);

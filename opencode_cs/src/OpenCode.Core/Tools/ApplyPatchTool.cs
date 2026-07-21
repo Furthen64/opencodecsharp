@@ -86,7 +86,7 @@ public class ApplyPatchTool : Tool
                 Resources: new[] { target.Resource },
                 Save: new[] { target.Save },
                 Metadata: null,
-                Source: $"tool:{context.AssistantMessageId}:{context.ToolCallId}",
+                Source: new Schema.PermissionSource("tool", context.AssistantMessageId, context.ToolCallId),
                 Agent: context.AgentId
             ));
         }
@@ -99,7 +99,7 @@ public class ApplyPatchTool : Tool
             Resources: resourceList,
             Save: new[] { "*" },
             Metadata: null,
-            Source: $"tool:{context.AssistantMessageId}:{context.ToolCallId}",
+            Source: new Schema.PermissionSource("tool", context.AssistantMessageId, context.ToolCallId),
             Agent: context.AgentId
         ));
 

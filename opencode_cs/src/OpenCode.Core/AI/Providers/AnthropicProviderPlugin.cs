@@ -118,6 +118,7 @@ public class AnthropicLanguageModel : ILanguageModel
 
         using var stream = await httpResp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
+        var pendingToolCalls = new Dictionary<int, AnthropicPendingToolCall>();
 
         while (await reader.ReadLineAsync(ct) is { } line)
         {
@@ -140,6 +141,14 @@ public class AnthropicLanguageModel : ILanguageModel
             switch (evt.Type)
             {
                 case "content_block_start":
+                    if (evt.Index is int startIndex && evt.ContentBlock?.Type == "tool_use" &&
+                        !string.IsNullOrWhiteSpace(evt.ContentBlock.Name))
+                    {
+                        pendingToolCalls[startIndex] = new AnthropicPendingToolCall(
+                            evt.ContentBlock.Id ?? $"call_{startIndex}",
+                            evt.ContentBlock.Name,
+                            evt.ContentBlock.Input);
+                    }
                     break;
 
                 case "content_block_delta":
@@ -153,17 +162,27 @@ public class AnthropicLanguageModel : ILanguageModel
                     }
                     else if (evt.Delta?.Type == "input_json_delta" && evt.Delta?.PartialJson != null)
                     {
-                        if (evt.Index is int index)
-                        {
-                            yield return new LLMStreamEvent(
-                                "tool_call_delta", evt.Delta.PartialJson,
-                                new LLMToolCall(index.ToString(), "", new Dictionary<string, object>()),
-                                null, null, null);
-                        }
+                        if (evt.Index is int index && pendingToolCalls.TryGetValue(index, out var pending))
+                            pending.Arguments.Append(evt.Delta.PartialJson);
                     }
                     break;
 
                 case "content_block_stop":
+                    if (evt.Index is int stopIndex && pendingToolCalls.Remove(stopIndex, out var completed))
+                    {
+                        var input = completed.Arguments.Length == 0
+                            ? completed.InitialInput
+                            : JsonSerializer.Deserialize<Dictionary<string, object>>(
+                                completed.Arguments.ToString(),
+                                SerializerDefaults.JsonOptions) ?? [];
+                        yield return new LLMStreamEvent(
+                            "tool_call",
+                            null,
+                            new LLMToolCall(completed.Id, completed.Name, input),
+                            null,
+                            null,
+                            null);
+                    }
                     break;
 
                 case "message_delta":
@@ -198,7 +217,7 @@ public class AnthropicLanguageModel : ILanguageModel
         }
     }
 
-    object BuildRequestBody(LLMRequest request)
+    protected virtual object BuildRequestBody(LLMRequest request)
     {
         var messages = new List<object>();
         var system = new List<object>();
@@ -216,7 +235,41 @@ public class AnthropicLanguageModel : ILanguageModel
             }
             else
             {
-                messages.Add(new { role = msg.Role, content = msg.Content?.ToString() ?? "" });
+                switch (msg.Content)
+                {
+                    case LLMAssistantContent assistant:
+                        var assistantParts = new List<object>();
+                        if (!string.IsNullOrEmpty(assistant.Text))
+                            assistantParts.Add(new { type = "text", text = assistant.Text });
+                        assistantParts.AddRange(assistant.ToolCalls.Select(call => (object)new
+                        {
+                            type = "tool_use",
+                            id = call.Id,
+                            name = call.Name,
+                            input = call.Input,
+                        }));
+                        messages.Add(new { role = "assistant", content = assistantParts });
+                        break;
+                    case LLMToolResultContent result:
+                        messages.Add(new
+                        {
+                            role = "user",
+                            content = new object[]
+                            {
+                                new
+                                {
+                                    type = "tool_result",
+                                    tool_use_id = result.CallId,
+                                    content = LLMContentSerializer.ResultText(result.Result),
+                                    is_error = result.IsError,
+                                },
+                            },
+                        });
+                        break;
+                    default:
+                        messages.Add(new { role = msg.Role, content = msg.Content?.ToString() ?? "" });
+                        break;
+                }
             }
         }
 
@@ -260,11 +313,40 @@ file class AnthropicEvent
     [JsonPropertyName("delta")]
     public AnthropicDelta? Delta { get; set; }
 
+    [JsonPropertyName("content_block")]
+    public AnthropicContentBlock? ContentBlock { get; set; }
+
     [JsonPropertyName("message")]
     public AnthropicMessageStart? Message { get; set; }
 
     [JsonPropertyName("error")]
     public AnthropicError? Error { get; set; }
+}
+
+file class AnthropicContentBlock
+{
+    [JsonPropertyName("type")]
+    public string? Type { get; set; }
+
+    [JsonPropertyName("id")]
+    public string? Id { get; set; }
+
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
+    [JsonPropertyName("input")]
+    public Dictionary<string, object> Input { get; set; } = [];
+}
+
+file sealed class AnthropicPendingToolCall(
+    string id,
+    string name,
+    Dictionary<string, object> initialInput)
+{
+    public string Id { get; } = id;
+    public string Name { get; } = name;
+    public Dictionary<string, object> InitialInput { get; } = initialInput;
+    public StringBuilder Arguments { get; } = new();
 }
 
 file class AnthropicDelta

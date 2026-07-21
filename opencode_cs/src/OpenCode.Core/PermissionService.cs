@@ -9,7 +9,7 @@ public record CorePermissionRequest(
     string[] Resources,
     string[]? Save,
     Dictionary<string, object>? Metadata,
-    string? Source
+    Schema.PermissionSource? Source
 );
 
 public record PermissionAssertInput(
@@ -19,7 +19,7 @@ public record PermissionAssertInput(
     string[] Resources,
     string[]? Save,
     Dictionary<string, object>? Metadata,
-    string? Source,
+    Schema.PermissionSource? Source,
     string? Agent
 );
 
@@ -49,6 +49,11 @@ public class PermissionBlockedError : Exception
     {
         Rules = rules;
     }
+}
+
+public class PermissionNotFoundException(string requestId) : Exception($"Permission request not found: {requestId}")
+{
+    public string RequestId { get; } = requestId;
 }
 
 static class Wildcard
@@ -174,7 +179,7 @@ public class PermissionService : IPermissionService
     public async Task ReplyAsync(string requestId, Schema.PermissionReply reply, string? message = null)
     {
         if (!pending.TryRemove(requestId, out var pendingItem))
-            return;
+            throw new PermissionNotFoundException(requestId);
 
         await events.PublishAsync(EventDefinitions.PermissionReplied, new
         {

@@ -7,6 +7,15 @@ public record SessionUnknownError(
     string Message
 );
 
+[JsonPolymorphic]
+[JsonDerivedType(typeof(SessionMessageAgentSwitched), typeDiscriminator: "agent-switched")]
+[JsonDerivedType(typeof(SessionMessageModelSwitched), typeDiscriminator: "model-switched")]
+[JsonDerivedType(typeof(SessionMessageUser), typeDiscriminator: "user")]
+[JsonDerivedType(typeof(SessionMessageSynthetic), typeDiscriminator: "synthetic")]
+[JsonDerivedType(typeof(SessionMessageSystem), typeDiscriminator: "system")]
+[JsonDerivedType(typeof(SessionMessageShell), typeDiscriminator: "shell")]
+[JsonDerivedType(typeof(SessionMessageAssistant), typeDiscriminator: "assistant")]
+[JsonDerivedType(typeof(SessionMessageCompaction), typeDiscriminator: "compaction")]
 public record SessionMessageBase(
     string Id,
     Dictionary<string, object>? Metadata,

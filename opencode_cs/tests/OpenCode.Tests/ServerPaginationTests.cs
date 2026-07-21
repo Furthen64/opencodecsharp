@@ -27,6 +27,7 @@ public sealed class ServerPaginationTests
         await store.AddMessageAsync("ses_1", Message("msg_1", 100));
         await store.AddMessageAsync("ses_1", Message("msg_2", 100));
         await store.AddMessageAsync("ses_1", Message("msg_3", 100));
+        Assert.Equal(3, (await store.MessagesAsync("ses_1")).Count);
 
         using var client = new HttpClient { BaseAddress = ServerAddress(app) };
 

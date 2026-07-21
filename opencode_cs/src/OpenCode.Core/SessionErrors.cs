@@ -33,6 +33,15 @@ public class SessionPromptConflictError : Exception
     }
 }
 
+public class SessionBusyError : Exception
+{
+    public string SessionId { get; }
+    public SessionBusyError(string sessionId) : base($"Session is busy: {sessionId}")
+    {
+        SessionId = sessionId;
+    }
+}
+
 public interface ISessionService
 {
     Task<List<Schema.SessionInfo>> ListAsync(SessionListInput? input = null);
@@ -40,14 +49,16 @@ public interface ISessionService
     Task<Schema.SessionInfo> GetAsync(string sessionId);
     Task<List<Schema.SessionInfo>> ChildrenAsync(string sessionId);
     Task<Schema.SessionInfo> UpdateAsync(SessionUpdateInput input);
+    Task<Schema.SessionInfo> ForkAsync(string sessionId, string? messageId = null);
     Task RemoveAsync(string sessionId);
     Task<List<object>> MessagesAsync(SessionMessagesInput input);
     Task<object?> MessageAsync(string sessionId, string messageId);
+    Task RemoveMessageAsync(string sessionId, string messageId);
     Task<List<object>> ContextAsync(string sessionId);
     Task<SessionAdmitted> PromptAsync(SessionPromptInput input);
     Task SwitchAgentAsync(SessionSwitchAgentInput input);
     Task SwitchModelAsync(SessionSwitchModelInput input);
-    Task CompactAsync(SessionCompactInput input);
+    Task<bool> CompactAsync(SessionCompactInput input);
     Task WaitAsync(string sessionId);
     Task<HashSet<string>> ActiveAsync();
     Task ResumeAsync(string sessionId);
@@ -68,32 +79,38 @@ public class SessionStore
     readonly Dictionary<string, Schema.SessionInfo> sessions = new();
     readonly Dictionary<string, List<Schema.SessionMessageBase>> messages = new();
 
-    public Task<Schema.SessionInfo?> GetAsync(string sessionId) => Task.FromResult(sessions.TryGetValue(sessionId, out var s) ? s : null);
-    public Task SetAsync(Schema.SessionInfo session)
+    public virtual Task<Schema.SessionInfo?> GetAsync(string sessionId) => Task.FromResult(sessions.TryGetValue(sessionId, out var s) ? s : null);
+    public virtual Task SetAsync(Schema.SessionInfo session)
     {
         sessions[session.Id] = session;
         messages.TryAdd(session.Id, []);
         return Task.CompletedTask;
     }
-    public Task<List<Schema.SessionInfo>> AllAsync() => Task.FromResult(new List<Schema.SessionInfo>(sessions.Values));
-    public Task<List<Schema.SessionMessageBase>> MessagesAsync(string sessionId) =>
+    public virtual Task<List<Schema.SessionInfo>> AllAsync() => Task.FromResult(new List<Schema.SessionInfo>(sessions.Values));
+    public virtual Task<List<Schema.SessionMessageBase>> MessagesAsync(string sessionId) =>
         Task.FromResult(messages.TryGetValue(sessionId, out var list) ? list : new List<Schema.SessionMessageBase>());
-    public Task AddMessageAsync(string sessionId, Schema.SessionMessageBase message)
+    public virtual Task AddMessageAsync(string sessionId, Schema.SessionMessageBase message)
     {
         messages.GetValueOrDefault(sessionId, []).Add(message);
         return Task.CompletedTask;
     }
-    public Task RemoveAsync(string sessionId)
+    public virtual Task RemoveAsync(string sessionId)
     {
         sessions.Remove(sessionId);
         messages.Remove(sessionId);
         return Task.CompletedTask;
     }
-    public Task ReplaceMessageAsync(string sessionId, string messageId, Schema.SessionMessageBase message)
+    public virtual Task ReplaceMessageAsync(string sessionId, string messageId, Schema.SessionMessageBase message)
     {
         var list = messages.GetValueOrDefault(sessionId, []);
         var index = list.FindIndex(current => current.Id == messageId);
         if (index >= 0) list[index] = message;
+        return Task.CompletedTask;
+    }
+    public virtual Task RemoveMessageAsync(string sessionId, string messageId)
+    {
+        if (messages.TryGetValue(sessionId, out var list))
+            list.RemoveAll(message => message.Id == messageId);
         return Task.CompletedTask;
     }
 }
@@ -104,14 +121,24 @@ public sealed class SessionService : ISessionService
     private readonly ISessionExecution execution;
     private readonly IProjectService projects;
     private readonly IEventService events;
+    private readonly ISessionRevertService reverts;
+    private readonly ISessionCompactionService compaction;
     private long admittedSequence;
 
-    public SessionService(SessionStore store, ISessionExecution execution, IProjectService projects, IEventService events)
+    public SessionService(
+        SessionStore store,
+        ISessionExecution execution,
+        IProjectService projects,
+        IEventService events,
+        ISessionRevertService reverts,
+        ISessionCompactionService compaction)
     {
         this.store = store;
         this.execution = execution;
         this.projects = projects;
         this.events = events;
+        this.reverts = reverts;
+        this.compaction = compaction;
     }
 
     public async Task<List<Schema.SessionInfo>> ListAsync(SessionListInput? input = null)
@@ -195,6 +222,35 @@ public sealed class SessionService : ISessionService
         return updated;
     }
 
+    public async Task<Schema.SessionInfo> ForkAsync(string sessionId, string? messageId = null)
+    {
+        var original = await GetAsync(sessionId);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var fork = new Schema.SessionInfo(
+            Schema.SessionId.Create(),
+            null,
+            original.ProjectId,
+            null,
+            null,
+            0,
+            new Schema.SessionTokens(0, 0, 0, new Schema.SessionCacheTokens(0, 0)),
+            new Schema.SessionTime(now, now, null),
+            ForkedTitle(original.Title),
+            original.Location,
+            original.Subpath,
+            null);
+        await store.SetAsync(fork);
+
+        foreach (var message in await store.MessagesAsync(sessionId))
+        {
+            if (messageId is not null && string.CompareOrdinal(message.Id, messageId) >= 0)
+                break;
+            await store.AddMessageAsync(fork.Id, message with { Id = Schema.MessageId.Create() });
+        }
+
+        return fork;
+    }
+
     public async Task RemoveAsync(string sessionId)
     {
         await GetAsync(sessionId);
@@ -233,6 +289,17 @@ public sealed class SessionService : ISessionService
         return (await store.MessagesAsync(sessionId)).FirstOrDefault(message => message.Id == messageId);
     }
 
+    public async Task RemoveMessageAsync(string sessionId, string messageId)
+    {
+        await GetAsync(sessionId);
+        if ((await execution.ActiveAsync()).Contains(sessionId))
+            throw new SessionBusyError(sessionId);
+        await store.RemoveMessageAsync(sessionId, messageId);
+        await events.PublishAsync(
+            new EventDefinition("session.message.removed", true, "SessionId", 1),
+            new { SessionId = sessionId, MessageId = messageId });
+    }
+
     public async Task<List<object>> ContextAsync(string sessionId)
     {
         await GetAsync(sessionId);
@@ -242,6 +309,7 @@ public sealed class SessionService : ISessionService
     public async Task<SessionAdmitted> PromptAsync(SessionPromptInput input)
     {
         await GetAsync(input.SessionId);
+        await reverts.CommitAsync(input.SessionId);
         var messageId = input.Id ?? Schema.MessageId.Create();
         var prompt = new SessionPrompt(input.Prompt.Text, null, null);
         var created = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
@@ -276,7 +344,15 @@ public sealed class SessionService : ISessionService
         await store.SetAsync(session with { Model = input.Model, Time = session.Time with { Updated = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() } });
     }
 
-    public async Task CompactAsync(SessionCompactInput input) => await GetAsync(input.SessionId);
+    public async Task<bool> CompactAsync(SessionCompactInput input)
+    {
+        await GetAsync(input.SessionId);
+        await reverts.CommitAsync(input.SessionId);
+        var result = await compaction.CompactManualAsync(input.SessionId, input.Model, input.Auto);
+        if (result.Compacted && input.Auto)
+            await execution.WakeAsync(input.SessionId);
+        return result.Compacted;
+    }
     public async Task WaitAsync(string sessionId) => await GetAsync(sessionId);
     public Task<HashSet<string>> ActiveAsync() => execution.ActiveAsync();
 
@@ -290,5 +366,13 @@ public sealed class SessionService : ISessionService
     {
         await GetAsync(sessionId);
         await execution.InterruptAsync(sessionId);
+    }
+
+    private static string ForkedTitle(string title)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(title, @"^(.+) \(fork #(\d+)\)$");
+        return match.Success
+            ? $"{match.Groups[1].Value} (fork #{long.Parse(match.Groups[2].Value) + 1})"
+            : $"{title} (fork #1)";
     }
 }

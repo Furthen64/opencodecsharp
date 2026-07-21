@@ -54,18 +54,81 @@ public interface IEventService
     Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after = -1, int limit = 100);
 }
 
+public interface IDurableEventStore
+{
+    Task<int> PublishAsync(string aggregateId, string eventId, string type, Dictionary<string, object> data);
+    Task RemoveAsync(string aggregateId);
+    Task ClaimAsync(string aggregateId, string ownerId);
+    Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after, int limit);
+}
+
+public sealed class InMemoryDurableEventStore : IDurableEventStore
+{
+    private readonly Dictionary<string, int> sequences = new();
+    private readonly List<SerializedEvent> events = [];
+    private readonly object sync = new();
+
+    public Task<int> PublishAsync(
+        string aggregateId,
+        string eventId,
+        string type,
+        Dictionary<string, object> data)
+    {
+        lock (sync)
+        {
+            var sequence = sequences.TryGetValue(aggregateId, out var current) ? current + 1 : 1;
+            sequences[aggregateId] = sequence;
+            events.Add(new SerializedEvent(eventId, type, sequence, aggregateId, data));
+            return Task.FromResult(sequence);
+        }
+    }
+
+    public Task RemoveAsync(string aggregateId)
+    {
+        lock (sync)
+        {
+            sequences.Remove(aggregateId);
+            events.RemoveAll(item => item.AggregateId == aggregateId);
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task ClaimAsync(string aggregateId, string ownerId) => Task.CompletedTask;
+
+    public Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after, int limit)
+    {
+        lock (sync)
+        {
+            return Task.FromResult(events
+                .Where(item => item.AggregateId == aggregateId && item.Seq > after)
+                .OrderBy(item => item.Seq)
+                .Take(limit)
+                .ToArray());
+        }
+    }
+}
+
 public class EventService : IEventService, IDisposable
 {
     readonly ConcurrentDictionary<string, Action<EventPayload>> listeners = new();
     readonly ConcurrentDictionary<string, Channel<EventPayload>> typedChannels = new();
     readonly ConcurrentDictionary<string, Channel<bool>> durableWakes = new();
-    readonly object lockObj = new();
+    readonly IDurableEventStore durableStore;
 
     static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
         WriteIndented = false
     };
+
+    public EventService() : this(new InMemoryDurableEventStore())
+    {
+    }
+
+    public EventService(IDurableEventStore durableStore)
+    {
+        this.durableStore = durableStore;
+    }
 
     public async Task<EventPayload> PublishAsync(EventDefinition definition, object data, PublishOptions? options = null)
     {
@@ -89,7 +152,11 @@ public class EventService : IEventService, IDisposable
             if (string.IsNullOrEmpty(aggregateId))
                 throw new InvalidDurableEventError(definition.Type, $"Expected aggregate field {definition.AggregateField}");
 
-            var seq = await PersistDurableEventAsync(aggregateId, payload, definition);
+            var seq = await durableStore.PublishAsync(
+                aggregateId,
+                payload.Id,
+                VersionedType(definition),
+                SerializeData(payload.Data));
             payload = payload with { Durable = new SessionEventDurable(aggregateId, seq, definition.Version) };
 
             await NotifyDurableWakesAsync(aggregateId);
@@ -121,31 +188,14 @@ public class EventService : IEventService, IDisposable
         return prop?.GetValue(data)?.ToString();
     }
 
-    Task<int> PersistDurableEventAsync(string aggregateId, EventPayload payload, EventDefinition definition)
-    {
-        lock (lockObj)
-        {
-            var seq = sequences.TryGetValue(aggregateId, out var current) ? current + 1 : 1;
-            sequences[aggregateId] = seq;
-            durableEvents.Add(new SerializedEvent(
-                Id: payload.Id,
-                Type: definition.Type,
-                Seq: seq,
-                AggregateId: aggregateId,
-                Data: SerializeData(payload.Data)
-            ));
-            return Task.FromResult(seq);
-        }
-    }
-
     static Dictionary<string, object> SerializeData(object data)
     {
         var json = JsonSerializer.SerializeToElement(data, JsonOptions);
         return json.Deserialize<Dictionary<string, object>>() ?? new();
     }
 
-    readonly Dictionary<string, int> sequences = new();
-    readonly List<SerializedEvent> durableEvents = new();
+    private static string VersionedType(EventDefinition definition) =>
+        $"{definition.Type}.{definition.Version}";
 
     async Task NotifyListenersAsync(EventPayload payload)
     {
@@ -195,33 +245,16 @@ public class EventService : IEventService, IDisposable
         await Task.Yield();
     }
 
-    public Task RemoveAsync(string aggregateId)
+    public async Task RemoveAsync(string aggregateId)
     {
-        lock (lockObj)
-        {
-            sequences.Remove(aggregateId);
-            durableEvents.RemoveAll(e => e.AggregateId == aggregateId);
-        }
+        await durableStore.RemoveAsync(aggregateId);
         durableWakes.TryRemove(aggregateId, out _);
-        return Task.CompletedTask;
     }
 
-    public async Task ClaimAsync(string aggregateId, string ownerId)
-    {
-        await Task.Yield();
-    }
+    public Task ClaimAsync(string aggregateId, string ownerId) => durableStore.ClaimAsync(aggregateId, ownerId);
 
-    public Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after = -1, int limit = 100)
-    {
-        lock (lockObj)
-        {
-            return Task.FromResult(durableEvents
-                .Where(e => e.AggregateId == aggregateId && e.Seq > after)
-                .OrderBy(e => e.Seq)
-                .Take(limit)
-                .ToArray());
-        }
-    }
+    public Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after = -1, int limit = 100) =>
+        durableStore.ReplayAsync(aggregateId, after, limit);
 
     public void Dispose()
     {

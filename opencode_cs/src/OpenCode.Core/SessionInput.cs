@@ -37,7 +37,8 @@ public record SessionUpdateInput(
 
 public record SessionCompactInput(
     string SessionId,
-    string? Prompt
+    Schema.ModelRef Model,
+    bool Auto
 );
 
 public record SessionListInput(

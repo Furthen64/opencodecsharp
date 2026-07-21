@@ -27,6 +27,19 @@ public class ProjectRepository
     public async Task UpsertAsync(ProjectInfo project)
     {
         using var conn = db.CreateConnection();
+        var parameters = new DynamicParameters();
+        parameters.Add("Id", project.Id);
+        parameters.Add("Worktree", project.Worktree);
+        parameters.Add("Vcs", project.Vcs?.ToString());
+        parameters.Add("Name", project.Name);
+        parameters.Add("IconUrl", project.Icon?.Url);
+        parameters.Add("IconUrlOverride", project.Icon?.Override);
+        parameters.Add("IconColor", project.Icon?.Color);
+        parameters.Add("TimeCreated", project.Time.Created);
+        parameters.Add("TimeUpdated", project.Time.Updated);
+        parameters.Add("TimeInitialized", project.Time.Initialized);
+        parameters.Add("Sandboxes", JsonSerializer.Serialize(project.Sandboxes));
+        parameters.Add("Commands", project.Commands != null ? JsonSerializer.Serialize(project.Commands) : null);
         await conn.ExecuteAsync(@"
             INSERT INTO ""project"" (
                 ""id"", ""worktree"", ""vcs"", ""name"",
@@ -51,21 +64,7 @@ public class ProjectRepository
                 ""time_initialized"" = @TimeInitialized,
                 ""sandboxes"" = @Sandboxes,
                 ""commands"" = @Commands",
-            new
-            {
-                project.Id,
-                project.Worktree,
-                Vcs = project.Vcs?.ToString(),
-                project.Name,
-                IconUrl = project.Icon?.Url,
-                IconUrlOverride = project.Icon?.Override,
-                IconColor = project.Icon?.Color,
-                project.Time.Created,
-                project.Time.Updated,
-                project.Time.Initialized,
-                Sandboxes = JsonSerializer.Serialize(project.Sandboxes),
-                Commands = project.Commands != null ? JsonSerializer.Serialize(project.Commands) : null,
-            });
+            parameters);
     }
 
     public async Task<List<ProjectInfo>> ListAsync()

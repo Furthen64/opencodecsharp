@@ -38,6 +38,10 @@ public record SessionUpdateTimeRequest(
     long? Archived
 );
 
+public record SessionForkRequest(
+    string? MessageID
+);
+
 public record SessionActiveResponse(
     Dictionary<string, SessionActiveStatus> Data
 );
@@ -65,13 +69,15 @@ public record SessionPromptResponse(
     SessionInputAdmitted Data
 );
 
-public record SessionRevertStageRequest(
-    string MessageID,
-    bool? Files
+public record SessionSummarizeRequest(
+    string ProviderID,
+    string ModelID,
+    bool? Auto
 );
 
-public record SessionRevertStageResponse(
-    RevertState Data
+public record SessionRevertRequest(
+    string MessageID,
+    string? PartID
 );
 
 public record SessionHistoryQuery(

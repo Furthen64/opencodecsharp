@@ -71,10 +71,14 @@ public class SnapshotService : ISnapshotService
             if (source == null) return null;
 
             var snapshotGitDir = Path.Combine(dataDirectory, "snapshot", projectId, HashFast(source.Worktree));
-            var scope = GetScope(source.Worktree);
 
             var repository = await GetOrCreateRepositoryAsync(source, snapshotGitDir);
             if (repository == null) return null;
+
+            var scope = GetScope(source.Worktree);
+            var addExit = await RunSnapshotGitAsync(repository, ["add", "--all", "--", scope]);
+            if (addExit != 0)
+                throw new SnapshotError(SnapshotOperation.Capture, "Could not stage the working tree");
 
             var treeId = await git.WriteTreeAsync(repository);
             return SnapshotId.Make(treeId);
@@ -109,20 +113,39 @@ public class SnapshotService : ISnapshotService
         var repository = await RequireRepositoryAsync();
         foreach (var (file, snapshot) in files)
         {
-            var absolutePath = Path.Combine(projectDirectory!, file);
-            var patch = await git.CapturePatchAsync(repository, file);
-            if (!string.IsNullOrEmpty(patch))
-            {
-                await git.ApplyPatchAsync(projectDirectory!, patch);
-            }
+            var relative = RelativePath(file, repository.Worktree);
+            var exit = await RunSnapshotGitAsync(repository, ["checkout", snapshot.Value, "--", relative]);
+            if (exit == 0) continue;
+            if (await ExistsAsync(repository, snapshot, relative))
+                throw new SnapshotError(SnapshotOperation.Restore, $"Could not restore {relative}");
+            var absolute = Path.Combine(repository.Worktree, relative);
+            if (File.Exists(absolute)) File.Delete(absolute);
         }
     }
 
     public async Task CheckoutAsync(SnapshotId snapshot)
     {
         var repository = await RequireRepositoryAsync();
-        await git.RunAsync(repository.Worktree, new[] { "read-tree", snapshot.Value });
-        await git.RunAsync(repository.Worktree, new[] { "checkout-index", "--all", "--force" });
+        var current = await CaptureAsync();
+        var changed = current is null
+            ? Array.Empty<string>()
+            : await git.TreeFilesAsync(repository, current.Value.Value, snapshot.Value);
+        var remove = new List<string>();
+        foreach (var file in changed)
+        {
+            if (!await ExistsAsync(repository, snapshot, file))
+                remove.Add(file);
+        }
+
+        if (await RunSnapshotGitAsync(repository, ["read-tree", snapshot.Value]) != 0 ||
+            await RunSnapshotGitAsync(repository, ["checkout-index", "--all", "--force"]) != 0)
+            throw new SnapshotError(SnapshotOperation.Restore, $"Could not restore {snapshot.Value}");
+
+        foreach (var file in remove)
+        {
+            var absolute = Path.Combine(repository.Worktree, RelativePath(file, repository.Worktree));
+            if (File.Exists(absolute)) File.Delete(absolute);
+        }
     }
 
     async Task<GitRepository?> GetOrCreateRepositoryAsync(GitRepository source, string snapshotGitDir)
@@ -157,6 +180,50 @@ public class SnapshotService : ISnapshotService
             throw new SnapshotError(SnapshotOperation.Capture, "Could not create snapshot repository");
 
         return repo;
+    }
+
+    async Task<int> RunSnapshotGitAsync(GitRepository repository, string[] args)
+    {
+        var command = new List<string>
+        {
+            "--git-dir", repository.GitDirectory,
+            "--work-tree", repository.Worktree,
+        };
+        command.AddRange(args);
+        return await git.RunAsync(repository.Worktree, command.ToArray());
+    }
+
+    async Task<bool> ExistsAsync(GitRepository repository, SnapshotId snapshot, string file)
+    {
+        var output = new System.Text.StringBuilder();
+        var exit = await RunSnapshotGitAsync(
+            repository,
+            ["ls-tree", "--name-only", snapshot.Value, "--", RelativePath(file, repository.Worktree)],
+            output);
+        return exit == 0 && output.Length > 0;
+    }
+
+    async Task<int> RunSnapshotGitAsync(
+        GitRepository repository,
+        string[] args,
+        System.Text.StringBuilder stdout)
+    {
+        var command = new List<string>
+        {
+            "--git-dir", repository.GitDirectory,
+            "--work-tree", repository.Worktree,
+        };
+        command.AddRange(args);
+        return await git.RunAsync(repository.Worktree, command.ToArray(), stdout);
+    }
+
+    static string RelativePath(string path, string worktree)
+    {
+        var relative = Path.IsPathRooted(path) ? Path.GetRelativePath(worktree, path) : path;
+        relative = relative.Replace('\\', '/');
+        if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+            throw new SnapshotError(SnapshotOperation.Restore, $"Path is outside the worktree: {path}");
+        return relative;
     }
 
     string GetScope(string worktree)

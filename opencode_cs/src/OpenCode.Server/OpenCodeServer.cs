@@ -29,6 +29,16 @@ public static class OpenCodeServer
         directory = Path.GetFullPath(directory);
         services.AddSingleton(new OpenCodeServerOptions { Directory = directory });
 
+        var databasePath = configuration["OpenCode:Database"];
+        if (string.IsNullOrWhiteSpace(databasePath) && environment.IsEnvironment("Testing"))
+            databasePath = Path.Combine(directory, ".opencode-tests.db");
+        services.AddSingleton(new Database(databasePath));
+        services.AddSingleton<ProjectRepository>();
+        services.AddSingleton<SessionRepository>();
+        services.AddSingleton<MessageRepository>();
+        services.AddSingleton<EventRepository>();
+        services.AddSingleton<IDurableEventStore, RepositoryDurableEventStore>();
+
         services.AddSingleton<IFsUtil, FsUtil>();
         services.AddSingleton<IFileBrowserService>(provider => new FileBrowserService(
             provider.GetRequiredService<IFsUtil>(),
@@ -36,7 +46,9 @@ public static class OpenCodeServer
         services.AddSingleton<IGitService, GitService>();
         services.AddSingleton<IAgentService, AgentService>();
         services.AddSingleton<IProjectService, ProjectService>();
-        services.AddSingleton<IEventService, EventService>();
+        services.AddSingleton<IEventService>(provider =>
+            new EventService(provider.GetRequiredService<IDurableEventStore>()));
+        services.AddSingleton<IPermissionService, PermissionService>();
         services.AddSingleton<IQuestionService, QuestionService>();
         services.AddSingleton<ISessionTodoService, SessionTodoService>();
         services.AddSingleton<ISkillService, SkillService>();
@@ -57,11 +69,27 @@ public static class OpenCodeServer
         services.AddSingleton<ILLMClient, ModelLLMClient>();
         services.AddSingleton<IModelResolver, ServerModelResolver>();
         services.AddSingleton<IToolRegistry, ToolRegistry>();
-        services.AddSingleton<SessionStore>();
+        services.AddSingleton<SessionStore, RepositorySessionStore>();
+        services.AddSingleton<ISnapshotService>(provider =>
+        {
+            var options = provider.GetRequiredService<OpenCodeServerOptions>();
+            var project = provider.GetRequiredService<IProjectService>()
+                .ResolveAsync(options.Directory).GetAwaiter().GetResult();
+            var dataDirectory = environment.IsEnvironment("Testing")
+                ? Path.Combine(Path.GetTempPath(), "opencode-tests", project.Id)
+                : GlobalPathsBuilder.Create().Data;
+            return new SnapshotService(
+                provider.GetRequiredService<IGitService>(),
+                project.Directory,
+                options.Directory,
+                project.Id,
+                dataDirectory);
+        });
+        services.AddSingleton<ISessionCompactionService, SessionCompactionService>();
         services.AddSingleton<ISessionRunner, SessionRunner>();
         services.AddSingleton<ISessionExecution, SessionExecution>();
         services.AddSingleton<ISessionService, SessionService>();
-        services.AddSingleton<Database>();
+        services.AddSingleton<ISessionRevertService, SessionRevertService>();
         return services;
     }
 
@@ -188,6 +216,19 @@ public static class OpenCodeServer
             return Results.Ok(true);
         }).WithName("QuestionReject");
 
+        endpoints.MapGet("/permission", async (IPermissionService permissions) =>
+            Results.Ok((await permissions.ListAsync()).Select(ToSchemaPermissionRequest).ToArray()))
+            .WithName("PermissionList");
+
+        endpoints.MapPost("/permission/{requestId}/reply", async (
+            string requestId,
+            SessionPermissionReplyRequest request,
+            IPermissionService permissions) =>
+        {
+            await permissions.ReplyAsync(requestId, request.Reply, request.Message);
+            return Results.Ok(true);
+        }).WithName("PermissionReply");
+
         endpoints.MapGet("/event", StreamEventsAsync)
             .WithName("EventSubscribe");
 
@@ -258,6 +299,13 @@ public static class OpenCodeServer
                 request.Time?.Archived))))
             .WithName("SessionUpdate");
 
+        endpoints.MapPost("/session/{sessionId}/fork", async (
+            string sessionId,
+            SessionForkRequest? request,
+            ISessionService sessions) =>
+            Results.Ok(await sessions.ForkAsync(sessionId, request?.MessageID)))
+            .WithName("SessionFork");
+
         endpoints.MapDelete("/session/{sessionId}", async (string sessionId, ISessionService sessions) =>
         {
             await sessions.RemoveAsync(sessionId);
@@ -272,6 +320,13 @@ public static class OpenCodeServer
             await sessions.GetAsync(sessionId);
             return Results.Ok(await todos.GetAsync(sessionId));
         }).WithName("SessionTodo");
+
+        endpoints.MapGet("/session/{sessionId}/diff", async (
+            string sessionId,
+            string? messageID,
+            ISessionRevertService revert) =>
+            Results.Ok(await revert.DiffAsync(sessionId, messageID)))
+            .WithName("SessionDiff");
 
         endpoints.MapGet("/session/{sessionId}/message", async (
             string sessionId,
@@ -304,6 +359,15 @@ public static class OpenCodeServer
                 : Results.Ok(message);
         }).WithName("SessionMessageGet");
 
+        endpoints.MapDelete("/session/{sessionId}/message/{messageId}", async (
+            string sessionId,
+            string messageId,
+            ISessionService sessions) =>
+        {
+            await sessions.RemoveMessageAsync(sessionId, messageId);
+            return Results.Ok(true);
+        }).WithName("SessionMessageDelete");
+
         endpoints.MapPost("/session/{sessionId}/message", async (
             string sessionId,
             SessionPromptRequest request,
@@ -328,6 +392,43 @@ public static class OpenCodeServer
                 null);
             return Results.Ok(new SessionPromptResponse(response));
         }).WithName("SessionPrompt");
+
+        endpoints.MapPost("/session/{sessionId}/prompt_async", async (
+            string sessionId,
+            SessionPromptRequest request,
+            ISessionService sessions) =>
+        {
+            await sessions.PromptAsync(new SessionPromptInput(
+                request.Id,
+                sessionId,
+                request.Prompt,
+                ToCoreDelivery(request.Delivery),
+                request.Resume));
+            return Results.NoContent();
+        }).WithName("SessionPromptAsync");
+
+        endpoints.MapPost("/session/{sessionId}/revert", async (
+            string sessionId,
+            SessionRevertRequest request,
+            ISessionRevertService revert) =>
+            Results.Ok(await revert.RevertAsync(sessionId, request.MessageID, request.PartID)))
+            .WithName("SessionRevert");
+
+        endpoints.MapPost("/session/{sessionId}/unrevert", async (
+            string sessionId,
+            ISessionRevertService revert) =>
+            Results.Ok(await revert.UnrevertAsync(sessionId)))
+            .WithName("SessionUnrevert");
+
+        endpoints.MapPost("/session/{sessionId}/summarize", async (
+            string sessionId,
+            SessionSummarizeRequest request,
+            ISessionService sessions) =>
+            Results.Ok(await sessions.CompactAsync(new SessionCompactInput(
+                sessionId,
+                new Schema.ModelRef(request.ModelID, request.ProviderID, null),
+                request.Auto ?? false))))
+            .WithName("SessionSummarize");
 
         endpoints.MapPost("/session/{sessionId}/abort", async (string sessionId, ISessionService sessions) =>
         {
@@ -395,6 +496,15 @@ public static class OpenCodeServer
         null,
         new Schema.ProjectTime(project.Created, project.Updated, null),
         []);
+
+    private static Schema.PermissionRequest ToSchemaPermissionRequest(CorePermissionRequest request) => new(
+        request.Id,
+        request.SessionId,
+        request.Action,
+        request.Resources,
+        request.Save,
+        request.Metadata,
+        request.Source);
 
     private static Schema.AgentMode ParseAgentMode(string? mode) => mode?.ToLowerInvariant() switch
     {
@@ -472,7 +582,9 @@ public static class ServerErrors
         (int Status, ApiError Error) result = exception switch
         {
             OpenCode.Core.SessionNotFoundError notFound => (StatusCodes.Status404NotFound, new OpenCode.Protocol.SessionNotFoundError(notFound.SessionId, notFound.Message)),
+            OpenCode.Core.SessionBusyError busy => (StatusCodes.Status409Conflict, new OpenCode.Protocol.SessionBusyError(busy.SessionId, busy.Message)),
             QuestionNotFoundException notFound => (StatusCodes.Status404NotFound, new OpenCode.Protocol.QuestionNotFoundError(notFound.RequestId, notFound.Message)),
+            PermissionNotFoundException notFound => (StatusCodes.Status404NotFound, new OpenCode.Protocol.PermissionNotFoundError(notFound.RequestId, notFound.Message)),
             PermissionBlockedError blocked => (StatusCodes.Status403Forbidden, new ForbiddenError(blocked.Message)),
             InvalidCursorException invalid => (StatusCodes.Status400BadRequest, new InvalidCursorError(invalid.Message)),
             InvalidFilePathException invalid => (StatusCodes.Status400BadRequest, new InvalidRequestError(invalid.Message, "Query", "path")),
@@ -481,7 +593,7 @@ public static class ServerErrors
         };
 
         context.Response.StatusCode = result.Status;
-        await context.Response.WriteAsJsonAsync(result.Error);
+        await context.Response.WriteAsJsonAsync(result.Error, result.Error.GetType());
     }
 }
 

@@ -175,18 +175,50 @@ public class GoogleLanguageModel : ILanguageModel
         }
     }
 
-    object BuildRequestBody(LLMRequest request)
+    protected virtual object BuildRequestBody(LLMRequest request)
     {
         var contents = new List<object>();
 
         foreach (var msg in request.Messages)
         {
-            var role = msg.Role == "assistant" ? "model" : "user";
-            contents.Add(new
+            switch (msg.Content)
             {
-                role,
-                parts = new[] { new { text = msg.Content?.ToString() ?? "" } }
-            });
+                case LLMAssistantContent assistant:
+                    var assistantParts = new List<object>();
+                    if (!string.IsNullOrEmpty(assistant.Text))
+                        assistantParts.Add(new { text = assistant.Text });
+                    assistantParts.AddRange(assistant.ToolCalls.Select(call => (object)new
+                    {
+                        functionCall = new { name = call.Name, args = call.Input },
+                    }));
+                    contents.Add(new { role = "model", parts = assistantParts });
+                    break;
+                case LLMToolResultContent result:
+                    contents.Add(new
+                    {
+                        role = "user",
+                        parts = new object[]
+                        {
+                            new
+                            {
+                                functionResponse = new
+                                {
+                                    name = result.Name,
+                                    response = LLMContentSerializer.ResultObject(result.Result),
+                                },
+                            },
+                        },
+                    });
+                    break;
+                default:
+                    var role = msg.Role == "assistant" ? "model" : "user";
+                    contents.Add(new
+                    {
+                        role,
+                        parts = new[] { new { text = msg.Content?.ToString() ?? "" } },
+                    });
+                    break;
+            }
         }
 
         var body = new Dictionary<string, object>

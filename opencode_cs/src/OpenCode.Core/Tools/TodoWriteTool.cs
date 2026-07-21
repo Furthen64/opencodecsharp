@@ -90,7 +90,7 @@ public class TodoWriteToolImpl : Tool
             Resources: new[] { "*" },
             Save: new[] { "*" },
             Metadata: null,
-            Source: $"tool:{context.AssistantMessageId}:{context.ToolCallId}",
+            Source: new Schema.PermissionSource("tool", context.AssistantMessageId, context.ToolCallId),
                 Agent: context.AgentId
         ));
 

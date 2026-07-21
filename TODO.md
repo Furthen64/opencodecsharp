@@ -81,12 +81,18 @@ SQLite data access ported (Drizzle → Microsoft.Data.Sqlite + Dapper).
 ### Phase 5: Server — IN PROGRESS
 Port ASP.NET Core Minimal APIs (Hono → Minimal APIs).
 - Depends on: Core, Protocol, Data
-- Implemented: health/path, project list/current, agent/skill/VCS/question (including reply/reject), session create/get/list/update/delete/children, status, and todo APIs
+- Implemented: health/path, project list/current, agent/skill/VCS, question (including reply/reject), pending permission list/reply, session create/get/list/update/delete/children, status, and todo APIs
 - Implemented: confined file listing/content reads, filename search, and regular-expression text search APIs
 - Implemented: conversational session prompt and message-history APIs
+- Implemented: session fork, asynchronous prompt admission, and guarded message deletion APIs
+- Implemented: session diff and snapshot-backed revert/unrevert APIs
+- In progress: durable manual and automatic session compaction with checkpoint-aware model context; implementation and focused tests are present, but the final focused test run was interrupted
 - Implemented: SSE event endpoint, provider registration, model selection, streamed assistant replies, and built-in filesystem/shell tool execution
 - Implemented: opaque bidirectional pagination cursors for session and message lists, with API integration coverage
-- Remaining: broader route parity, durable repository-backed session/event storage, tool-result conversation state/continuations, and broader API integration tests
+- Implemented: repository-backed SQLite session/message storage, including polymorphic message rehydration across server restarts
+- Implemented: repository-backed durable event storage with monotonic sequencing, replay, ownership claims, and aggregate removal across server restarts
+- Implemented: durable tool running/completed/error message state, automatic model continuations, and provider-native OpenAI/Anthropic/Google tool-result history
+- Remaining: broader route parity and broader API integration tests
 
 ### Phase 6: Client — IN PROGRESS
 Port HTTP client.
@@ -102,6 +108,25 @@ Port CLI entry point, TUI, and plugin system.
 - Depends on: Sdk
 - Implemented: minimal interactive terminal chat TUI backed by the HTTP client
 - Remaining: full-screen terminal UX, live SSE rendering, commands, CLI entry point, and plugin integration
+
+---
+
+## Next Agenda
+
+1. Finish compaction verification.
+   - Run: `DOTNET_CLI_HOME=/tmp/opencodecsharp-dotnet dotnet test opencode_cs/tests/OpenCode.Tests/OpenCode.Tests.csproj --no-restore -m:1 -v minimal --filter 'FullyQualifiedName~ServerSessionCompactionTests|FullyQualifiedName~SessionRunnerTests'`
+   - Fix any failures in the durable checkpoint, head/recent split, automatic preflight compaction, or `/session/{sessionID}/summarize` path.
+   - Current evidence: the full solution compiled with 0 warnings/errors after the production compaction changes; the test command was interrupted after the new tests were added, so the current test sources are not yet verified.
+2. Re-run all gates after compaction is green.
+   - Full test suite, full solution build, `dotnet format --verify-no-changes`, and `git diff --check`.
+   - Last fully verified baseline before the compaction slice: 27/27 tests passed.
+3. Continue Phase 5 route parity with real backing services.
+   - Prioritize config/provider catalog and authentication because they unblock model discovery and configuration for clients.
+   - Then port project update/Git initialization and remaining VCS/file-status routes.
+   - Continue the remaining session, MCP, and PTY routes only as their core services become available; do not expose placeholder handlers.
+4. Expand Phase 6 client coverage after each server family stabilizes.
+   - Add typed client methods for fork, async prompt, message deletion, diff, revert/unrevert, and summarize.
+   - Add client/server contract tests before starting the embedded SDK host.
 
 ---
 

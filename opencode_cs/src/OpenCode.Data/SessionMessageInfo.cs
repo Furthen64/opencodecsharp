@@ -7,7 +7,7 @@ public record SessionMessageInfo(
     string Id,
     string SessionId,
     string Type,
-    int Seq,
+    long Seq,
     long TimeCreated,
     long TimeUpdated,
     string Data

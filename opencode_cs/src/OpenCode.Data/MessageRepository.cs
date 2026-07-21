@@ -1,10 +1,20 @@
-using System.Text.Json;
 using OpenCode.Schema;
 
 namespace OpenCode.Data;
 
 public class MessageRepository
 {
+    private const string SelectColumns = @"
+        SELECT
+            ""id"" AS Id,
+            ""session_id"" AS SessionId,
+            ""type"" AS Type,
+            ""seq"" AS Seq,
+            ""time_created"" AS TimeCreated,
+            ""time_updated"" AS TimeUpdated,
+            ""data"" AS Data
+        FROM ""session_message""";
+
     readonly Database db;
     public MessageRepository(Database db) => this.db = db;
 
@@ -14,16 +24,18 @@ public class MessageRepository
 
         if (afterSeq.HasValue)
         {
+            var parameters = Parameters(("SessionId", sessionId), ("AfterSeq", afterSeq.Value));
             var rows = await conn.QueryAsync<SessionMessageInfo>(
-                "SELECT * FROM \"session_message\" WHERE \"session_id\" = @SessionId AND \"seq\" > @AfterSeq ORDER BY \"seq\" ASC",
-                new { SessionId = sessionId, AfterSeq = afterSeq.Value });
+                SelectColumns + " WHERE \"session_id\" = @SessionId AND \"seq\" > @AfterSeq ORDER BY \"seq\" ASC",
+                parameters);
             return rows.ToList();
         }
         else
         {
+            var parameters = Parameters(("SessionId", sessionId));
             var rows = await conn.QueryAsync<SessionMessageInfo>(
-                "SELECT * FROM \"session_message\" WHERE \"session_id\" = @SessionId ORDER BY \"seq\" ASC",
-                new { SessionId = sessionId });
+                SelectColumns + " WHERE \"session_id\" = @SessionId ORDER BY \"seq\" ASC",
+                parameters);
             return rows.ToList();
         }
     }
@@ -31,6 +43,14 @@ public class MessageRepository
     public async Task UpsertAsync(SessionMessageInfo msg)
     {
         using var conn = db.CreateConnection();
+        var parameters = Parameters(
+            ("Id", msg.Id),
+            ("SessionId", msg.SessionId),
+            ("Type", msg.Type),
+            ("Seq", msg.Seq),
+            ("TimeCreated", msg.TimeCreated),
+            ("TimeUpdated", msg.TimeUpdated),
+            ("Data", msg.Data));
         await conn.ExecuteAsync(@"
             INSERT INTO ""session_message"" (
                 ""id"", ""session_id"", ""type"", ""seq"",
@@ -46,16 +66,7 @@ public class MessageRepository
                 ""time_created"" = @TimeCreated,
                 ""time_updated"" = @TimeUpdated,
                 ""data"" = @Data",
-            new
-            {
-                msg.Id,
-                msg.SessionId,
-                msg.Type,
-                msg.Seq,
-                msg.TimeCreated,
-                msg.TimeUpdated,
-                Data = JsonSerializer.Serialize(msg),
-            });
+            parameters);
     }
 
     public async Task DeleteBySessionAsync(string sessionId)
@@ -63,23 +74,39 @@ public class MessageRepository
         using var conn = db.CreateConnection();
         await conn.ExecuteAsync(
             "DELETE FROM \"session_message\" WHERE \"session_id\" = @SessionId",
-            new { SessionId = sessionId });
+            Parameters(("SessionId", sessionId)));
     }
 
-    public async Task DeleteAfterSeqAsync(string sessionId, int seq)
+    public async Task DeleteAsync(string sessionId, string messageId)
+    {
+        using var conn = db.CreateConnection();
+        await conn.ExecuteAsync(
+            "DELETE FROM \"session_message\" WHERE \"session_id\" = @SessionId AND \"id\" = @MessageId",
+            Parameters(("SessionId", sessionId), ("MessageId", messageId)));
+    }
+
+    public async Task DeleteAfterSeqAsync(string sessionId, long seq)
     {
         using var conn = db.CreateConnection();
         await conn.ExecuteAsync(
             "DELETE FROM \"session_message\" WHERE \"session_id\" = @SessionId AND \"seq\" > @Seq",
-            new { SessionId = sessionId, Seq = seq });
+            Parameters(("SessionId", sessionId), ("Seq", seq)));
     }
 
-    public async Task<int> GetMaxSeqAsync(string sessionId)
+    public async Task<long> GetMaxSeqAsync(string sessionId)
     {
         using var conn = db.CreateConnection();
-        var result = await conn.QuerySingleOrDefaultAsync<int?>(
+        var result = await conn.QuerySingleOrDefaultAsync<long?>(
             "SELECT MAX(\"seq\") FROM \"session_message\" WHERE \"session_id\" = @SessionId",
-            new { SessionId = sessionId });
+            Parameters(("SessionId", sessionId)));
         return result ?? 0;
+    }
+
+    private static DynamicParameters Parameters(params (string Name, object? Value)[] values)
+    {
+        var parameters = new DynamicParameters();
+        foreach (var (name, value) in values)
+            parameters.Add(name, value);
+        return parameters;
     }
 }

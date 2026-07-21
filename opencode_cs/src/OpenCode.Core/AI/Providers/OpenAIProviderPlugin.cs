@@ -198,7 +198,41 @@ public class OpenAILanguageModel : ILanguageModel
 
         foreach (var msg in request.Messages)
         {
-            messages.Add(new { role = msg.Role, content = msg.Content });
+            switch (msg.Content)
+            {
+                case LLMAssistantContent assistant:
+                    var assistantMessage = new Dictionary<string, object?>
+                    {
+                        ["role"] = "assistant",
+                        ["content"] = assistant.Text,
+                    };
+                    if (assistant.ToolCalls.Length > 0)
+                    {
+                        assistantMessage["tool_calls"] = assistant.ToolCalls.Select(call => new
+                        {
+                            id = call.Id,
+                            type = "function",
+                            function = new
+                            {
+                                name = call.Name,
+                                arguments = JsonSerializer.Serialize(call.Input, SerializerDefaults.JsonOptions),
+                            },
+                        }).ToArray();
+                    }
+                    messages.Add(assistantMessage);
+                    break;
+                case LLMToolResultContent result:
+                    messages.Add(new
+                    {
+                        role = "tool",
+                        tool_call_id = result.CallId,
+                        content = LLMContentSerializer.ResultText(result.Result),
+                    });
+                    break;
+                default:
+                    messages.Add(new { role = msg.Role, content = msg.Content });
+                    break;
+            }
         }
 
         var body = new Dictionary<string, object>

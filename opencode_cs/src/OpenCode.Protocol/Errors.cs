@@ -40,6 +40,11 @@ public record SessionNotFoundError(
     string Message
 ) : ApiError("SessionNotFoundError", Message);
 
+public record SessionBusyError(
+    string SessionID,
+    string Message
+) : ApiError("SessionBusyError", Message);
+
 public record MessageNotFoundError(
     string SessionID,
     string MessageID,
