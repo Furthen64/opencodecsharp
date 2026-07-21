@@ -114,9 +114,8 @@ public class GoogleLanguageModel : ILanguageModel
         using var stream = await httpResp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
 
-        while (!reader.EndOfStream)
+        while (await reader.ReadLineAsync(ct) is { } line)
         {
-            var line = await reader.ReadLineAsync(ct);
             if (string.IsNullOrEmpty(line)) continue;
             if (!line.StartsWith("data: ")) continue;
             var data = line[6..];

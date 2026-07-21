@@ -26,8 +26,8 @@ public record ProviderLanguageResult(object Language);
 public interface IAISDKService
 {
     Task<object> GetLanguageModelAsync(Schema.ModelInfo model);
-    Task RegisterSdkHookAsync(Func<ProviderSdkEvent, Task<ProviderSdkResult?>> callback);
-    Task RegisterLanguageHookAsync(Func<ProviderLanguageEvent, Task<ProviderLanguageResult?>> callback);
+    void RegisterSdkHook(Func<ProviderSdkEvent, Task<ProviderSdkResult?>> callback);
+    void RegisterLanguageHook(Func<ProviderLanguageEvent, Task<ProviderLanguageResult?>> callback);
 }
 
 public class AISDKService : IAISDKService
@@ -38,16 +38,14 @@ public class AISDKService : IAISDKService
     readonly Dictionary<string, object> languageCache = new();
     readonly SemaphoreSlim semaphore = new(1, 1);
 
-    public Task RegisterSdkHookAsync(Func<ProviderSdkEvent, Task<ProviderSdkResult?>> callback)
+    public void RegisterSdkHook(Func<ProviderSdkEvent, Task<ProviderSdkResult?>> callback)
     {
         lock (sdkHooks) { sdkHooks.Add(callback); }
-        return Task.CompletedTask;
     }
 
-    public Task RegisterLanguageHookAsync(Func<ProviderLanguageEvent, Task<ProviderLanguageResult?>> callback)
+    public void RegisterLanguageHook(Func<ProviderLanguageEvent, Task<ProviderLanguageResult?>> callback)
     {
         lock (languageHooks) { languageHooks.Add(callback); }
-        return Task.CompletedTask;
     }
 
     public async Task<object> GetLanguageModelAsync(Schema.ModelInfo model)

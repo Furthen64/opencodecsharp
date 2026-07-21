@@ -117,9 +117,8 @@ public class OpenAILanguageModel : ILanguageModel
         using var reader = new StreamReader(stream);
         var pendingToolCalls = new Dictionary<int, PendingToolCall>();
 
-        while (!reader.EndOfStream)
+        while (await reader.ReadLineAsync(ct) is { } line)
         {
-            var line = await reader.ReadLineAsync(ct);
             if (string.IsNullOrEmpty(line)) continue;
             if (!line.StartsWith("data: ")) continue;
             var data = line[6..];

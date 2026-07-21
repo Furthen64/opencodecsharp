@@ -34,15 +34,15 @@ public record FileStat(string Type, long Size, long Modified);
 
 public class FsUtil : IFsUtil
 {
-    public async Task<bool> ExistsSafeAsync(string path)
+    public Task<bool> ExistsSafeAsync(string path)
     {
         try
         {
-            return File.Exists(path) || Directory.Exists(path);
+            return Task.FromResult(File.Exists(path) || Directory.Exists(path));
         }
         catch
         {
-            return false;
+            return Task.FromResult(false);
         }
     }
 
@@ -52,7 +52,7 @@ public class FsUtil : IFsUtil
         {
             return await File.ReadAllTextAsync(path).ConfigureAwait(false);
         }
-        catch when (true)
+        catch
         {
             return null;
         }
@@ -104,7 +104,8 @@ public class FsUtil : IFsUtil
     public async Task<object> ReadJsonAsync(string path)
     {
         var text = await File.ReadAllTextAsync(path).ConfigureAwait(false);
-        return System.Text.Json.JsonSerializer.Deserialize<object>(text);
+        return System.Text.Json.JsonSerializer.Deserialize<object>(text)
+            ?? throw new InvalidDataException($"JSON file is empty: {path}");
     }
 
     public async Task WriteJsonAsync(string path, object data)
@@ -122,7 +123,7 @@ public class FsUtil : IFsUtil
         await File.WriteAllTextAsync(path, content).ConfigureAwait(false);
     }
 
-    public async Task<string[]> FindUpAsync(string target, string start, string? stop = null)
+    public Task<string[]> FindUpAsync(string target, string start, string? stop = null)
     {
         var result = new System.Collections.Generic.List<string>();
         var current = Path.GetFullPath(start);
@@ -136,10 +137,10 @@ public class FsUtil : IFsUtil
             if (parent == null || parent == current) break;
             current = parent;
         }
-        return result.ToArray();
+        return Task.FromResult(result.ToArray());
     }
 
-    public async Task<string[]> UpAsync(string[] targets, string start, string? stop = null)
+    public Task<string[]> UpAsync(string[] targets, string start, string? stop = null)
     {
         var result = new System.Collections.Generic.List<string>();
         var current = Path.GetFullPath(start);
@@ -156,7 +157,7 @@ public class FsUtil : IFsUtil
             if (parent == null || parent == current) break;
             current = parent;
         }
-        return result.ToArray();
+        return Task.FromResult(result.ToArray());
     }
 
     public string MimeType(string path)

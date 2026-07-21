@@ -78,7 +78,7 @@ public class BashTool : Tool
 
         process.Start();
 
-        var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeout));
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(timeout));
 
         try
         {
@@ -103,7 +103,10 @@ public class BashTool : Tool
                 );
             }
 
-            var output = outputTask.Result;
+            var output = await outputTask.ConfigureAwait(false);
+            var error = await errorTask.ConfigureAwait(false);
+            if (!string.IsNullOrEmpty(error))
+                output = string.IsNullOrEmpty(output) ? error : $"{output}{Environment.NewLine}{error}";
             var exitCode = process.ExitCode;
 
             if (output.Length > MaxCaptureBytes)

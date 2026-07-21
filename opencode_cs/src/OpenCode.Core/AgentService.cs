@@ -41,16 +41,23 @@ public interface AgentDraft
     List<AgentInfo> List();
     AgentInfo? Get(string id);
     void SetDefault(string? id);
-    void Update(string id, Action<AgentInfo> fn);
+    void Update(string id, Func<AgentInfo, AgentInfo> update);
     void Remove(string id);
 }
 
 public class AgentService : IAgentService
 {
-    readonly Dictionary<string, AgentInfo> agents = new();
-    string? defaultId;
+    readonly StateManager<AgentState, AgentDraft> state;
 
-    public Task<AgentInfo?> GetAsync(string id) => Task.FromResult(agents.TryGetValue(id, out var agent) ? agent : null);
+    public AgentService()
+    {
+        state = new StateManager<AgentState, AgentDraft>(
+            initialFactory: () => new AgentState(),
+            draftFactory: current => new AgentDraftImplementation(current));
+    }
+
+    public Task<AgentInfo?> GetAsync(string id) =>
+        Task.FromResult(state.Get().Agents.TryGetValue(id, out var agent) ? agent : null);
 
     public Task<AgentInfo?> DefaultAsync()
     {
@@ -60,8 +67,8 @@ public class AgentService : IAgentService
 
     public Task<AgentInfo?> ResolveAsync(string? id = null)
     {
-        if (id != null && agents.TryGetValue(id, out var agent))
-            return Task.FromResult(agent);
+        if (id != null && state.Get().Agents.TryGetValue(id, out var agent))
+            return Task.FromResult<AgentInfo?>(agent);
         return DefaultAsync();
     }
 
@@ -69,24 +76,26 @@ public class AgentService : IAgentService
     {
         if (id != null)
         {
-            agents.TryGetValue(id, out var info);
+            state.Get().Agents.TryGetValue(id, out var info);
             return Task.FromResult(new AgentSelection(id, info));
         }
         var selected = SelectDefault();
         return Task.FromResult(new AgentSelection(selected?.Id ?? "build", selected));
     }
 
-    public Task<List<AgentInfo>> AllAsync() => Task.FromResult(new List<AgentInfo>(agents.Values));
+    public Task<List<AgentInfo>> AllAsync() => Task.FromResult(new List<AgentInfo>(state.Get().Agents.Values));
 
-    public Task<IStateTransformable<AgentDraft>> TransformAsync() => Task.FromResult<IStateTransformable<AgentDraft>>(new AgentTransformWrapper(this));
+    public Task<IStateTransformable<AgentDraft>> TransformAsync() =>
+        Task.FromResult<IStateTransformable<AgentDraft>>(state);
 
     AgentInfo? SelectDefault()
     {
-        if (defaultId != null && agents.TryGetValue(defaultId, out var configured) && IsSelectable(configured))
+        var current = state.Get();
+        if (current.DefaultId != null && current.Agents.TryGetValue(current.DefaultId, out var configured) && IsSelectable(configured))
             return configured;
-        if (agents.TryGetValue("build", out var build) && IsSelectable(build))
+        if (current.Agents.TryGetValue("build", out var build) && IsSelectable(build))
             return build;
-        foreach (var agent in agents.Values)
+        foreach (var agent in current.Agents.Values)
         {
             if (IsSelectable(agent)) return agent;
         }
@@ -95,14 +104,26 @@ public class AgentService : IAgentService
 
     static bool IsSelectable(AgentInfo agent) => agent.Mode != "subagent" && !agent.Hidden.GetValueOrDefault();
 
-    public void AddAgent(AgentInfo agent) => agents[agent.Id] = agent;
-    public void SetDefaultId(string? id) => defaultId = id;
-
-    class AgentTransformWrapper : IStateTransformable<AgentDraft>
+    sealed class AgentState
     {
-        readonly AgentService service;
-        public AgentTransformWrapper(AgentService service) => this.service = service;
-        public Task<TransformRegistration> TransformAsync(TransformCallback<AgentDraft> callback) => Task.FromResult<TransformRegistration>(null!);
-        public Task ReloadAsync() => Task.CompletedTask;
+        public Dictionary<string, AgentInfo> Agents { get; } = new();
+        public string? DefaultId { get; set; }
+    }
+
+    sealed class AgentDraftImplementation(AgentState state) : AgentDraft
+    {
+        public List<AgentInfo> List() => state.Agents.Values.ToList();
+
+        public AgentInfo? Get(string id) => state.Agents.GetValueOrDefault(id);
+
+        public void SetDefault(string? id) => state.DefaultId = id;
+
+        public void Update(string id, Func<AgentInfo, AgentInfo> update)
+        {
+            var current = state.Agents.GetValueOrDefault(id) ?? AgentInfoDefaults.Empty(id);
+            state.Agents[id] = update(current) with { Id = id };
+        }
+
+        public void Remove(string id) => state.Agents.Remove(id);
     }
 }

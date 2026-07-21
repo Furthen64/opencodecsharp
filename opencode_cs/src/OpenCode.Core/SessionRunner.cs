@@ -328,27 +328,40 @@ static class ToolInvocation
     {
         "read" => Schema(new Dictionary<string, object>
         {
-            ["path"] = String(), ["offset"] = Integer(), ["limit"] = Integer(),
+            ["path"] = String(),
+            ["offset"] = Integer(),
+            ["limit"] = Integer(),
         }, "path"),
         "write" => Schema(new Dictionary<string, object>
         {
-            ["path"] = String(), ["content"] = String(),
+            ["path"] = String(),
+            ["content"] = String(),
         }, "path", "content"),
         "edit" => Schema(new Dictionary<string, object>
         {
-            ["path"] = String(), ["oldString"] = String(), ["newString"] = String(), ["replaceAll"] = Boolean(),
+            ["path"] = String(),
+            ["oldString"] = String(),
+            ["newString"] = String(),
+            ["replaceAll"] = Boolean(),
         }, "path", "oldString", "newString", "replaceAll"),
         "glob" => Schema(new Dictionary<string, object>
         {
-            ["pattern"] = String(), ["path"] = String(), ["limit"] = Integer(),
+            ["pattern"] = String(),
+            ["path"] = String(),
+            ["limit"] = Integer(),
         }, "pattern"),
         "grep" => Schema(new Dictionary<string, object>
         {
-            ["pattern"] = String(), ["path"] = String(), ["include"] = String(), ["limit"] = Integer(),
+            ["pattern"] = String(),
+            ["path"] = String(),
+            ["include"] = String(),
+            ["limit"] = Integer(),
         }, "pattern"),
         "bash" => Schema(new Dictionary<string, object>
         {
-            ["command"] = String(), ["workdir"] = String(), ["timeout"] = Integer(),
+            ["command"] = String(),
+            ["workdir"] = String(),
+            ["timeout"] = Integer(),
         }, "command"),
         _ => Schema(new Dictionary<string, object>()),
     };

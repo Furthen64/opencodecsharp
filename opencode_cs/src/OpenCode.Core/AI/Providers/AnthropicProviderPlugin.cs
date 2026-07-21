@@ -119,9 +119,8 @@ public class AnthropicLanguageModel : ILanguageModel
         using var stream = await httpResp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream);
 
-        while (!reader.EndOfStream)
+        while (await reader.ReadLineAsync(ct) is { } line)
         {
-            var line = await reader.ReadLineAsync(ct);
             if (string.IsNullOrEmpty(line)) continue;
             if (!line.StartsWith("data: ")) continue;
             var data = line[6..];
@@ -154,11 +153,11 @@ public class AnthropicLanguageModel : ILanguageModel
                     }
                     else if (evt.Delta?.Type == "input_json_delta" && evt.Delta?.PartialJson != null)
                     {
-                        if (evt.Index != null)
+                        if (evt.Index is int index)
                         {
                             yield return new LLMStreamEvent(
                                 "tool_call_delta", evt.Delta.PartialJson,
-                                new LLMToolCall(evt.Index.ToString(), "", new Dictionary<string, object>()),
+                                new LLMToolCall(index.ToString(), "", new Dictionary<string, object>()),
                                 null, null, null);
                         }
                     }

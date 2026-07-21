@@ -121,21 +121,21 @@ public class EventService : IEventService, IDisposable
         return prop?.GetValue(data)?.ToString();
     }
 
-    async Task<int> PersistDurableEventAsync(string aggregateId, EventPayload payload, EventDefinition definition)
+    Task<int> PersistDurableEventAsync(string aggregateId, EventPayload payload, EventDefinition definition)
     {
-        int seq;
         lock (lockObj)
         {
-            seq = GetNextSequence(aggregateId);
+            var seq = sequences.TryGetValue(aggregateId, out var current) ? current + 1 : 1;
+            sequences[aggregateId] = seq;
+            durableEvents.Add(new SerializedEvent(
+                Id: payload.Id,
+                Type: definition.Type,
+                Seq: seq,
+                AggregateId: aggregateId,
+                Data: SerializeData(payload.Data)
+            ));
+            return Task.FromResult(seq);
         }
-        await PersistEventAsync(new SerializedEvent(
-            Id: payload.Id,
-            Type: definition.Type,
-            Seq: seq,
-            AggregateId: aggregateId,
-            Data: SerializeData(payload.Data)
-        ));
-        return seq;
     }
 
     static Dictionary<string, object> SerializeData(object data)
@@ -144,19 +144,7 @@ public class EventService : IEventService, IDisposable
         return json.Deserialize<Dictionary<string, object>>() ?? new();
     }
 
-    int GetNextSequence(string aggregateId)
-    {
-        return sequences.TryGetValue(aggregateId, out var seq) ? seq + 1 : 1;
-    }
-
     readonly Dictionary<string, int> sequences = new();
-
-    async Task PersistEventAsync(SerializedEvent @event)
-    {
-        durableEvents.Add(@event);
-        await Task.Yield();
-    }
-
     readonly List<SerializedEvent> durableEvents = new();
 
     async Task NotifyListenersAsync(EventPayload payload)
@@ -207,12 +195,15 @@ public class EventService : IEventService, IDisposable
         await Task.Yield();
     }
 
-    public async Task RemoveAsync(string aggregateId)
+    public Task RemoveAsync(string aggregateId)
     {
-        sequences.Remove(aggregateId);
-        durableEvents.RemoveAll(e => e.AggregateId == aggregateId);
+        lock (lockObj)
+        {
+            sequences.Remove(aggregateId);
+            durableEvents.RemoveAll(e => e.AggregateId == aggregateId);
+        }
         durableWakes.TryRemove(aggregateId, out _);
-        await Task.Yield();
+        return Task.CompletedTask;
     }
 
     public async Task ClaimAsync(string aggregateId, string ownerId)
@@ -220,20 +211,25 @@ public class EventService : IEventService, IDisposable
         await Task.Yield();
     }
 
-    public async Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after = -1, int limit = 100)
+    public Task<SerializedEvent[]> ReplayAsync(string aggregateId, int after = -1, int limit = 100)
     {
-        var events = durableEvents
-            .Where(e => e.AggregateId == aggregateId && e.Seq > after)
-            .OrderBy(e => e.Seq)
-            .Take(limit)
-            .ToArray();
-        await Task.Yield();
-        return events;
+        lock (lockObj)
+        {
+            return Task.FromResult(durableEvents
+                .Where(e => e.AggregateId == aggregateId && e.Seq > after)
+                .OrderBy(e => e.Seq)
+                .Take(limit)
+                .ToArray());
+        }
     }
 
     public void Dispose()
     {
-        UnsubscribeAsync(CancellationToken.None).Wait();
+        foreach (var channel in typedChannels.Values)
+            channel.Writer.TryComplete();
+        foreach (var wake in durableWakes.Values)
+            wake.Writer.TryComplete();
+        listeners.Clear();
     }
 
     sealed class Subscription(Action unsubscribe) : IDisposable

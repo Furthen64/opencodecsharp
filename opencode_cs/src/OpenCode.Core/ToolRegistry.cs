@@ -23,13 +23,13 @@ public abstract record ToolResultValue
 public record ToolSuccessResult : ToolResultValue
 {
     public override string Type => "success";
-    public object Value { get; init; }
+    public required object Value { get; init; }
 }
 
 public record ToolErrorResult : ToolResultValue
 {
     public override string Type => "error";
-    public string Value { get; init; }
+    public required string Value { get; init; }
 }
 
 public interface IToolRegistry
@@ -74,7 +74,7 @@ public class ToolRegistry : IToolRegistry
             try
             {
                 var output = await tool.ExecuteAsync(call.Input, context);
-                return new ToolSettlement(new ToolSuccessResult { Value = output.Structured }, output, null);
+                return new ToolSettlement(new ToolSuccessResult { Value = output.Structured ?? output.Content }, output, null);
             }
             catch (ToolFailure ex)
             {

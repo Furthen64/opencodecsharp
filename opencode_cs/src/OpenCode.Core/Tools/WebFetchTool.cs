@@ -189,7 +189,8 @@ public class WebFetchTool : Tool
     {
         var text = ExtractTextFromHtml(html);
 
-        text = Regex.Replace(text, @"<(h[1-6])[^>]*>(.*?)<\/\1>", (m) => {
+        text = Regex.Replace(text, @"<(h[1-6])[^>]*>(.*?)<\/\1>", (m) =>
+        {
             var level = int.Parse(m.Groups[1].Value.Substring(1));
             var prefix = new string('#', level);
             return $"\n\n{prefix} {m.Groups[2].Value}\n\n";

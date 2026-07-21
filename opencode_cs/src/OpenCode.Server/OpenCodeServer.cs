@@ -45,8 +45,8 @@ public static class OpenCodeServer
             var sdk = new AISDKService();
             foreach (var plugin in provider.GetServices<IProviderPlugin>())
             {
-                sdk.RegisterSdkHookAsync(plugin.CreateSdkAsync).GetAwaiter().GetResult();
-                sdk.RegisterLanguageHookAsync(plugin.CreateLanguageAsync).GetAwaiter().GetResult();
+                sdk.RegisterSdkHook(plugin.CreateSdkAsync);
+                sdk.RegisterLanguageHook(plugin.CreateLanguageAsync);
             }
             return sdk;
         });
