@@ -84,7 +84,8 @@ Port ASP.NET Core Minimal APIs (Hono → Minimal APIs).
 - Implemented: health/path, agent/skill/VCS/question, session lifecycle and status APIs
 - Implemented: conversational session prompt and message-history APIs
 - Implemented: SSE event endpoint, provider registration, model selection, streamed assistant replies, and built-in filesystem/shell tool execution
-- Remaining: broader route parity, pagination/cursor semantics, durable repository-backed session/event storage, tool-result conversation state/continuations, and API integration tests
+- Implemented: opaque bidirectional pagination cursors for session and message lists, with API integration coverage
+- Remaining: broader route parity, durable repository-backed session/event storage, tool-result conversation state/continuations, and broader API integration tests
 
 ### Phase 6: Client — IN PROGRESS
 Port HTTP client.

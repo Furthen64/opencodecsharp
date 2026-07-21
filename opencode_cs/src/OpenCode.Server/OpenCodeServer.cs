@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
@@ -118,18 +119,38 @@ public static class OpenCodeServer
         endpoints.MapGet("/event", StreamEventsAsync)
             .WithName("EventSubscribe");
 
-        endpoints.MapGet("/session", async ([AsParameters] SessionsQuery query, ISessionService sessions) =>
+        endpoints.MapGet("/session", async (
+            string? directory,
+            string? workspace,
+            string? project,
+            string? subpath,
+            string? cursor,
+            int? limit,
+            string? order,
+            string? search,
+            ISessionService sessions) =>
         {
+            if (order is not null && order is not ("asc" or "desc"))
+                return Results.BadRequest(new InvalidRequestError("Order must be 'asc' or 'desc'.", "Query", "order"));
+            var page = SessionCursorCodec.Decode(directory, workspace, project, subpath, cursor, order, search);
             var data = await sessions.ListAsync(new SessionListInput(
-                query.Workspace,
-                query.Search,
-                query.Limit,
-                query.Order?.ToString(),
-                null,
-                query.Directory,
-                query.Project,
-                query.Subpath));
-            return Results.Ok(new SessionsResponse(data, new PaginationCursor(null, null)));
+                page.Workspace,
+                page.Search,
+                limit ?? 50,
+                page.Order,
+                page.Anchor,
+                page.Directory,
+                page.Project,
+                page.Subpath));
+            return Results.Ok(new SessionsResponse(data, new PaginationCursor(
+                data.Count == 0 ? null : SessionCursorCodec.Encode(page with
+                {
+                    Anchor = new Schema.SessionListAnchor(data[0].Id, data[0].Time.Created, "previous")
+                }),
+                data.Count == 0 ? null : SessionCursorCodec.Encode(page with
+                {
+                    Anchor = new Schema.SessionListAnchor(data[^1].Id, data[^1].Time.Created, "next")
+                }))));
         }).WithName("SessionList");
 
         endpoints.MapGet("/session/status", async (ISessionService sessions) =>
@@ -158,12 +179,17 @@ public static class OpenCodeServer
             string? cursor,
             ISessionService sessions) =>
         {
+            if (cursor is not null && order is not null)
+                throw new InvalidCursorException("Cursor cannot be combined with order");
+            var page = MessageCursorCodec.Decode(cursor, order);
             var data = await sessions.MessagesAsync(new SessionMessagesInput(
                 sessionId,
-                limit,
-                order,
-                null));
-            return Results.Ok(new SessionMessagesResponse(data, new PaginationCursor(null, null)));
+                limit ?? 50,
+                page.Order,
+                page.Cursor));
+            return Results.Ok(new SessionMessagesResponse(data, new PaginationCursor(
+                data.Count == 0 ? null : MessageCursorCodec.Encode(((Schema.SessionMessageBase)data[0]).Id, page.Order, "previous"),
+                data.Count == 0 ? null : MessageCursorCodec.Encode(((Schema.SessionMessageBase)data[^1]).Id, page.Order, "next"))));
         }).WithName("SessionMessages");
 
         endpoints.MapGet("/session/{sessionId}/message/{messageId}", async (
@@ -337,10 +363,92 @@ public static class ServerErrors
             OpenCode.Core.SessionNotFoundError notFound => (StatusCodes.Status404NotFound, new OpenCode.Protocol.SessionNotFoundError(notFound.SessionId, notFound.Message)),
             QuestionNotFoundException notFound => (StatusCodes.Status404NotFound, new OpenCode.Protocol.QuestionNotFoundError(notFound.RequestId, notFound.Message)),
             PermissionBlockedError blocked => (StatusCodes.Status403Forbidden, new ForbiddenError(blocked.Message)),
+            InvalidCursorException invalid => (StatusCodes.Status400BadRequest, new InvalidCursorError(invalid.Message)),
             _ => (StatusCodes.Status500InternalServerError, new UnknownError("An unexpected server error occurred.")),
         };
 
         context.Response.StatusCode = result.Status;
         await context.Response.WriteAsJsonAsync(result.Error);
+    }
+}
+
+internal sealed class InvalidCursorException(string message) : Exception(message);
+
+internal record SessionCursorState(
+    string? Directory,
+    string? Workspace,
+    string? Project,
+    string? Subpath,
+    string Order,
+    string? Search,
+    Schema.SessionListAnchor? Anchor);
+
+internal static class SessionCursorCodec
+{
+    public static SessionCursorState Decode(
+        string? directory,
+        string? workspace,
+        string? project,
+        string? subpath,
+        string? cursor,
+        string? order,
+        string? search)
+    {
+        if (cursor is null)
+            return new SessionCursorState(directory, workspace, project, subpath, order ?? "desc", search, null);
+        var state = OpaqueCursor.Decode<SessionCursorState>(cursor);
+        if (state.Order is not ("asc" or "desc") || state.Anchor is null ||
+            state.Anchor.Direction is not ("previous" or "next") || string.IsNullOrWhiteSpace(state.Anchor.Id))
+            throw new InvalidCursorException("Invalid cursor");
+        return state;
+    }
+
+    public static string Encode(SessionCursorState state) => OpaqueCursor.Encode(state);
+}
+
+internal record MessageCursorState(string Id, string Order, string Direction);
+
+internal static class MessageCursorCodec
+{
+    public static (string Order, SessionMessageCursor? Cursor) Decode(string? cursor, string? order)
+    {
+        if (cursor is null) return (order?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true ? "asc" : "desc", null);
+        var state = OpaqueCursor.Decode<MessageCursorState>(cursor);
+        if (state.Order is not ("asc" or "desc") || state.Direction is not ("previous" or "next") || string.IsNullOrWhiteSpace(state.Id))
+            throw new InvalidCursorException("Invalid cursor");
+        return (state.Order, new SessionMessageCursor(state.Id, state.Direction));
+    }
+
+    public static string Encode(string id, string order, string direction) =>
+        OpaqueCursor.Encode(new MessageCursorState(id, order, direction));
+}
+
+internal static class OpaqueCursor
+{
+    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
+    public static string Encode<T>(T value) => Convert.ToBase64String(JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions))
+        .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+
+    public static T Decode<T>(string value)
+    {
+        try
+        {
+            var encoded = value.Replace('-', '+').Replace('_', '/');
+            encoded = encoded.PadRight(encoded.Length + (4 - encoded.Length % 4) % 4, '=');
+            return JsonSerializer.Deserialize<T>(Convert.FromBase64String(encoded), JsonOptions)
+                ?? throw new InvalidCursorException("Invalid cursor");
+        }
+        catch (InvalidCursorException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException or NotSupportedException)
+        {
+            throw new InvalidCursorException("Invalid cursor");
+        }
     }
 }

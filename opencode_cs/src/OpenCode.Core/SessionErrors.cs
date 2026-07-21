@@ -110,13 +110,27 @@ public sealed class SessionService : ISessionService
         var sessions = await store.AllAsync();
         var filtered = sessions.Where(session =>
             (input?.Directory is null || session.Location.Directory == input.Directory) &&
+            (input?.WorkspaceId is null || session.Location.WorkspaceId == input.WorkspaceId) &&
             (input?.Project is null || session.ProjectId == input.Project) &&
             (input?.Subpath is null || session.Subpath == input.Subpath) &&
             (input?.Search is null || session.Title.Contains(input.Search, StringComparison.OrdinalIgnoreCase)));
-        var ordered = input?.Order?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true
-            ? filtered.OrderBy(session => session.Time.Updated)
-            : filtered.OrderByDescending(session => session.Time.Updated);
-        return ordered.Take(input?.Limit ?? int.MaxValue).ToList();
+        var requestedAscending = input?.Order?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true;
+        var previous = input?.Anchor?.Direction.Equals("previous", StringComparison.OrdinalIgnoreCase) == true;
+        var ascending = previous ? !requestedAscending : requestedAscending;
+
+        if (input?.Anchor is { } anchor)
+        {
+            filtered = filtered.Where(session => ascending
+                ? session.Time.Created > anchor.Time || session.Time.Created == anchor.Time && string.CompareOrdinal(session.Id, anchor.Id) > 0
+                : session.Time.Created < anchor.Time || session.Time.Created == anchor.Time && string.CompareOrdinal(session.Id, anchor.Id) < 0);
+        }
+
+        var ordered = ascending
+            ? filtered.OrderBy(session => session.Time.Created).ThenBy(session => session.Id, StringComparer.Ordinal)
+            : filtered.OrderByDescending(session => session.Time.Created).ThenByDescending(session => session.Id, StringComparer.Ordinal);
+        var result = ordered.Take(input?.Limit ?? int.MaxValue).ToList();
+        if (previous) result.Reverse();
+        return result;
     }
 
     public async Task<Schema.SessionInfo> CreateAsync(SessionCreateInput input)
@@ -147,10 +161,22 @@ public sealed class SessionService : ISessionService
     {
         await GetAsync(input.SessionId);
         var all = await store.MessagesAsync(input.SessionId);
-        var ordered = input.Order?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true
-            ? all.OrderBy(message => message.Created)
-            : all.OrderByDescending(message => message.Created);
-        return ordered.Take(input.Limit ?? int.MaxValue).Cast<object>().ToList();
+        var requestedAscending = input.Order?.Equals("asc", StringComparison.OrdinalIgnoreCase) == true;
+        var previous = input.Cursor?.Direction.Equals("previous", StringComparison.OrdinalIgnoreCase) == true;
+        var ascending = previous ? !requestedAscending : requestedAscending;
+        var indexed = all.Select((message, index) => (Message: message, Index: index));
+
+        if (input.Cursor is { } cursor)
+        {
+            var anchor = all.FindIndex(message => message.Id == cursor.Id);
+            if (anchor < 0) return [];
+            indexed = indexed.Where(item => ascending ? item.Index > anchor : item.Index < anchor);
+        }
+
+        var ordered = ascending ? indexed.OrderBy(item => item.Index) : indexed.OrderByDescending(item => item.Index);
+        var result = ordered.Take(input.Limit ?? int.MaxValue).Select(item => (object)item.Message).ToList();
+        if (previous) result.Reverse();
+        return result;
     }
 
     public async Task<object?> MessageAsync(string sessionId, string messageId)
